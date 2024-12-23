@@ -43,8 +43,8 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.DjangoFilterBackend]
     filterset_class = PokemonCardFilter
 
+    @sync_to_async
     def save_card_to_db(self, card_dict):
-        """Async wrapper for database operations"""
         return PokemonCard.objects.update_or_create(
             card_name=card_dict['card_name'],
             set_name=card_dict['set_name'],
@@ -99,7 +99,7 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                     'profit_potential': card_data.profit_potential,
                 }
 
-                card_record, created = self.save_card_to_db(card_dict)
+                card_record, created = await self.save_card_to_db(card_dict)
                 saved_cards.append(card_record)
 
             if not saved_cards:
@@ -108,8 +108,9 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
-            serializer = self.serializer_class(saved_cards, many=True)
-            return Response(serializer.data)
+            serializer = await sync_to_async(self.serializer_class)(saved_cards, many=True)
+            serializer_data = await sync_to_async(getattr)(serializer, 'data')
+            return Response(serializer_data)
 
         except Exception as e:
             logger.error(f"Error processing request: {str(e)}", exc_info=True)
