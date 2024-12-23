@@ -43,7 +43,6 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.DjangoFilterBackend]
     filterset_class = PokemonCardFilter
 
-    @sync_to_async
     def save_card_to_db(self, card_dict):
         """Async wrapper for database operations"""
         return PokemonCard.objects.update_or_create(
@@ -55,7 +54,6 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
         )
 
     @action(detail=False, methods=['get'])
-    @async_action
     async def scrape_and_save(self, request):
         """
         Scrape card data and save to database
@@ -101,7 +99,7 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                     'profit_potential': card_data.profit_potential,
                 }
 
-                card_record, created = await self.save_card_to_db(card_dict)
+                card_record, created = self.save_card_to_db(card_dict)
                 saved_cards.append(card_record)
 
             if not saved_cards:
