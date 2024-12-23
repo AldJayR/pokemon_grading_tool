@@ -20,6 +20,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Run migrations (this is the important part)
 RUN python manage.py migrate --noinput
+RUN python manage.py collectstatic
 
 # Expose the port your application runs on
 EXPOSE 8000
