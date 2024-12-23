@@ -72,7 +72,6 @@ CORS_ALLOWED_ORIGINS = [
     'https://pokemon-proxx.vercel.app',
 ]
 
-# Add Vercel URL dynamically if present
 if VERCEL_URL:
     CORS_ALLOWED_ORIGINS.append(f'https://{VERCEL_URL}')
 
