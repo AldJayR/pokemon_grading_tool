@@ -65,12 +65,11 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-# CORS Settings for Vercel
-CORS_ALLOW_ALL_ORIGINS = False  # Do not allow all origins in production
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',  # Add your development frontend URL
-    'http://localhost:5173',  # Add your development frontend URL
-    'https://your-vercel-app.vercel.app', # Replace with your Vercel frontend URL
+    'http://localhost:3000', 
+    'http://localhost:5173',  
+    'https://pokemon-proxx.vercel.app',
 ]
 
 # Add Vercel URL dynamically if present
