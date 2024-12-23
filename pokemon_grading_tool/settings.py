@@ -17,6 +17,7 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
@@ -27,11 +28,15 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'your-default-secret-key-for-de
 DEBUG = os.environ.get('DJANGO_DEBUG', 'False') == 'True'
 
 # Allowed Hosts for Vercel
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*'] # Allow all hosts temporarily for Vercel
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*']
 # Vercel will set this environment variable
 VERCEL_URL = os.environ.get('VERCEL_URL')
 if VERCEL_URL:
     ALLOWED_HOSTS.append(VERCEL_URL)
+
+RAILWAY_URL = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
+if RAILWAY_URL:
+    ALLOWED_HOSTS.append(RAILWAY_URL)
     
 # Application definition
 
