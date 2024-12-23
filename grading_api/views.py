@@ -43,15 +43,25 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.DjangoFilterBackend]
     filterset_class = PokemonCardFilter
 
-    def save_card_to_db(self, card_dict):
+    @sync_to_async
+    def save_cards_to_db(self, cards_data):
+        saved_cards = []
         with transaction.atomic():
-            return PokemonCard.objects.update_or_create(
-                card_name=card_dict['card_name'],
-                set_name=card_dict['set_name'],
-                language=card_dict['language'],
-                rarity=card_dict['rarity'],
-                defaults=card_dict
-            )
+            for card_dict in cards_data:
+                card_record, created = PokemonCard.objects.update_or_create(
+                    card_name=card_dict['card_name'],
+                    set_name=card_dict['set_name'],
+                    language=card_dict['language'],
+                    rarity=card_dict['rarity'],
+                    defaults=card_dict
+                )
+                saved_cards.append(card_record)
+        return saved_cards
+
+    @sync_to_async
+    def serialize_cards(self, cards):
+        serializer = self.serializer_class(cards, many=True)
+        return serializer.data
 
     @action(detail=False, methods=['get'])
     def scrape_and_save(self, request):
@@ -84,29 +94,23 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_404_NOT_FOUND
                     )
 
-                # Process all cards in a single transaction
-                saved_cards = []
-                with transaction.atomic():
-                    for card_data in all_profit_data:
-                        card_dict = {
-                            'card_name': card_data.card_name,
-                            'set_name': card_data.set_name,
-                            'language': card_data.language,
-                            'rarity': card_data.rarity,
-                            'tcgplayer_price': card_data.tcgplayer_price,
-                            'psa_10_price': card_data.psa_10_price,
-                            'price_delta': card_data.price_delta,
-                            'profit_potential': card_data.profit_potential,
-                        }
-                        
-                        card_record, created = PokemonCard.objects.update_or_create(
-                            card_name=card_dict['card_name'],
-                            set_name=card_dict['set_name'],
-                            language=card_dict['language'],
-                            rarity=card_dict['rarity'],
-                            defaults=card_dict
-                        )
-                        saved_cards.append(card_record)
+                # Prepare cards data
+                cards_data = []
+                for card_data in all_profit_data:
+                    card_dict = {
+                        'card_name': card_data.card_name,
+                        'set_name': card_data.set_name,
+                        'language': card_data.language,
+                        'rarity': card_data.rarity,
+                        'tcgplayer_price': card_data.tcgplayer_price,
+                        'psa_10_price': card_data.psa_10_price,
+                        'price_delta': card_data.price_delta,
+                        'profit_potential': card_data.profit_potential,
+                    }
+                    cards_data.append(card_dict)
+
+                # Save all cards in a transaction
+                saved_cards = await self.save_cards_to_db(cards_data)
 
                 if not saved_cards:
                     return Response(
@@ -114,8 +118,9 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
                     )
 
-                serializer = self.serializer_class(saved_cards, many=True)
-                return Response(serializer.data)
+                # Serialize the results
+                serialized_data = await self.serialize_cards(saved_cards)
+                return Response(serialized_data)
 
             except Exception as e:
                 logger.error(f"Error processing request: {str(e)}", exc_info=True)
