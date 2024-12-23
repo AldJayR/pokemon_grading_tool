@@ -17,7 +17,6 @@ from pathlib import Path
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
@@ -27,11 +26,13 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'your-default-secret-key-for-de
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DJANGO_DEBUG', 'False') == 'True'
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
-RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
-if RENDER_EXTERNAL_HOSTNAME:
-    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
-
+# Allowed Hosts for Vercel
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*'] # Allow all hosts temporarily for Vercel
+# Vercel will set this environment variable
+VERCEL_URL = os.environ.get('VERCEL_URL')
+if VERCEL_URL:
+    ALLOWED_HOSTS.append(VERCEL_URL)
+    
 # Application definition
 
 INSTALLED_APPS = [
@@ -59,11 +60,17 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+# CORS Settings for Vercel
+CORS_ALLOW_ALL_ORIGINS = False  # Do not allow all origins in production
 CORS_ALLOWED_ORIGINS = [
-'http://localhost:5173',
+    'http://localhost:3000',  # Add your development frontend URL
+    'http://localhost:5173',  # Add your development frontend URL
+    'https://your-vercel-app.vercel.app', # Replace with your Vercel frontend URL
 ]
 
-
+# Add Vercel URL dynamically if present
+if VERCEL_URL:
+    CORS_ALLOWED_ORIGINS.append(f'https://{VERCEL_URL}')
 
 ROOT_URLCONF = 'pokemon_grading_tool.urls'
 
@@ -106,7 +113,6 @@ LOGGING = {
     },
 }
 
-
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
@@ -135,7 +141,6 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-
 # Internationalization
 # https://docs.djangoproject.com/en/5.1/topics/i18n/
 
@@ -146,7 +151,6 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 
 USE_TZ = True
-
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
@@ -165,6 +169,3 @@ if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    CORS_ALLOWED_ORIGINS += [
-        'https://your-frontend-domain.com',
-    ]
