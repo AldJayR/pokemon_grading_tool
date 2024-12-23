@@ -9,6 +9,7 @@ import asyncio
 from functools import wraps
 from asgiref.sync import sync_to_async
 
+
 from .models import PokemonCard
 from .serializers import PokemonCardSerializer
 from . import scraper
@@ -43,31 +44,27 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.DjangoFilterBackend]
     filterset_class = PokemonCardFilter
 
-    @sync_to_async
-    def save_cards_to_db(self, cards_data):
-        saved_cards = []
-        with transaction.atomic():
-            for card_dict in cards_data:
-                card_record, created = PokemonCard.objects.update_or_create(
-                    card_name=card_dict['card_name'],
-                    set_name=card_dict['set_name'],
-                    language=card_dict['language'],
-                    rarity=card_dict['rarity'],
-                    defaults=card_dict
-                )
-                saved_cards.append(card_record)
-        return saved_cards
-
-    @sync_to_async
-    def serialize_cards(self, cards):
-        serializer = self.serializer_class(cards, many=True)
-        return serializer.data
-
     @action(detail=False, methods=['get'])
     def scrape_and_save(self, request):
         """
         Scrape card data and save to database
         """
+        def sync_save_and_serialize(cards_data):
+            saved_cards = []
+            with transaction.atomic():
+                for card_dict in cards_data:
+                    card_record, created = PokemonCard.objects.update_or_create(
+                        card_name=card_dict['card_name'],
+                        set_name=card_dict['set_name'],
+                        language=card_dict['language'],
+                        rarity=card_dict['rarity'],
+                        defaults=card_dict
+                    )
+                    saved_cards.append(card_record)
+            
+            serializer = self.serializer_class(saved_cards, many=True)
+            return serializer.data
+
         async def async_scrape():
             search_query = request.query_params.get('searchQuery', '').strip()
             language = request.query_params.get('language', 'English')
@@ -109,17 +106,11 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                     }
                     cards_data.append(card_dict)
 
-                # Save all cards in a transaction
-                saved_cards = await self.save_cards_to_db(cards_data)
-
-                if not saved_cards:
-                    return Response(
-                        {'error': 'Failed to save card data'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
-
-                # Serialize the results
-                serialized_data = await self.serialize_cards(saved_cards)
+                # Run database operations in a separate thread
+                loop = asyncio.get_event_loop()
+                save_func = sync_to_async(sync_save_and_serialize)
+                serialized_data = await save_func(cards_data)
+                
                 return Response(serialized_data)
 
             except Exception as e:
