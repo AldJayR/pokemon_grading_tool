@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install Playwright and its dependencies
 RUN playwright install chromium --with-deps
 
-RUN python manage.py collectstatic --noinput
+RUN python ../manage.py collectstatic --noinput
 
 
 # Copy the rest of your application code
