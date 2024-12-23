@@ -46,53 +46,42 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def scrape_and_save(self, request):
-        """
-        Scrape card data and save to database
-        """
-        def sync_save_and_serialize(cards_data):
+        search_query = request.query_params.get('searchQuery', '').strip()
+        language = request.query_params.get('language', 'English')
+
+        if not search_query:
+            return Response(
+                {'error': 'Please provide a card or set name in query params'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Run the async scraping in a synchronous context
+            def run_scraper():
+                async def async_scrape():
+                    card_details = scraper.CardDetails(
+                        name=search_query,
+                        set_name=search_query,
+                        language=language
+                    )
+
+                    logger.info(f"Fetching data for {search_query} ({language})...")
+                    return await scraper.main([card_details])
+
+                return asyncio.run(async_scrape())
+
+            # Get the scraped data
+            all_profit_data = run_scraper()
+
+            if not all_profit_data:
+                return Response(
+                    {'error': f'No data found for {search_query}'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Process and save data synchronously
             saved_cards = []
             with transaction.atomic():
-                for card_dict in cards_data:
-                    card_record, created = PokemonCard.objects.update_or_create(
-                        card_name=card_dict['card_name'],
-                        set_name=card_dict['set_name'],
-                        language=card_dict['language'],
-                        rarity=card_dict['rarity'],
-                        defaults=card_dict
-                    )
-                    saved_cards.append(card_record)
-            
-            serializer = self.serializer_class(saved_cards, many=True)
-            return serializer.data
-
-        async def async_scrape():
-            search_query = request.query_params.get('searchQuery', '').strip()
-            language = request.query_params.get('language', 'English')
-
-            if not search_query:
-                return Response(
-                    {'error': 'Please provide a card or set name in query params'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            try:
-                card_details = scraper.CardDetails(
-                    name=search_query,
-                    set_name=search_query,
-                    language=language
-                )
-
-                logger.info(f"Fetching data for {search_query} ({language})...")
-                all_profit_data = await scraper.main([card_details])
-
-                if not all_profit_data:
-                    return Response(
-                        {'error': f'No data found for {search_query}'},
-                        status=status.HTTP_404_NOT_FOUND
-                    )
-
-                # Prepare cards data
-                cards_data = []
                 for card_data in all_profit_data:
                     card_dict = {
                         'card_name': card_data.card_name,
@@ -104,20 +93,29 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                         'price_delta': card_data.price_delta,
                         'profit_potential': card_data.profit_potential,
                     }
-                    cards_data.append(card_dict)
+                    
+                    card_record, created = PokemonCard.objects.update_or_create(
+                        card_name=card_dict['card_name'],
+                        set_name=card_dict['set_name'],
+                        language=card_dict['language'],
+                        rarity=card_dict['rarity'],
+                        defaults=card_dict
+                    )
+                    saved_cards.append(card_record)
 
-                # Run database operations in a separate thread
-                loop = asyncio.get_event_loop()
-                save_func = sync_to_async(sync_save_and_serialize)
-                serialized_data = await save_func(cards_data)
-                
-                return Response(serialized_data)
-
-            except Exception as e:
-                logger.error(f"Error processing request: {str(e)}", exc_info=True)
+            if not saved_cards:
                 return Response(
-                    {'error': f'An unexpected error occurred: {str(e)}'},
+                    {'error': 'Failed to save card data'},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
-        return asyncio.run(async_scrape())
+            # Serialize the results
+            serializer = self.serializer_class(saved_cards, many=True)
+            return Response(serializer.data)
+
+        except Exception as e:
+            logger.error(f"Error processing request: {str(e)}", exc_info=True)
+            return Response(
+                {'error': f'An unexpected error occurred: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
