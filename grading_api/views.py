@@ -60,8 +60,7 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
             return None
 
     @action(detail=False, methods=['get'])
-    @async_action
-    async def scrape_and_save(self, request):
+    def scrape_and_save(self, request):
         """
         Scrape card data and save to database. Supports three search modes:
         1. Card name only: /api/cards/scrape_and_save/?searchQuery=Pikachu
@@ -79,37 +78,42 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
             )
 
         try:
+            def run_scraper():
+                async def async_scrape():
             # Determine search type and create appropriate CardDetails
-            is_set_search = "SV" in search_query or ":" in search_query
+                    is_set_search = "SV" in search_query or ":" in search_query
 
-            # If it's a set search, use empty name and search_query as set_name
-            if is_set_search:
-                card_details = scraper.CardDetails(
-                    name="",
-                    set_name=search_query,
-                    language=language
-                )
-            else:
-                # If set_name parameter is provided, use both
-                if set_name:
-                    card_details = scraper.CardDetails(
-                        name=search_query,
-                        set_name=set_name,
-                        language=language
-                    )
-                else:
-                    # Card name search only
-                    card_details = scraper.CardDetails(
-                        name=search_query,
-                        set_name="",
-                        language=language
-                    )
+                    # If it's a set search, use empty name and search_query as set_name
+                    if is_set_search:
+                        card_details = scraper.CardDetails(
+                            name="",
+                            set_name=search_query,
+                            language=language
+                        )
+                    else:
+                        # If set_name parameter is provided, use both
+                        if set_name:
+                            card_details = scraper.CardDetails(
+                                name=search_query,
+                                set_name=set_name,
+                                language=language
+                            )
+                        else:
+                            # Card name search only
+                            card_details = scraper.CardDetails(
+                                name=search_query,
+                                set_name="",
+                                language=language
+                            )
 
-            logger.info(f"Starting search for: {search_query} "
-                       f"(Set: {card_details.set_name}, Language: {language})")
+                    logger.info(f"Starting search for: {search_query} "
+                            f"(Set: {card_details.set_name}, Language: {language})")
+                    return await scraper.main([card_details])
+
+                return asyncio.run(async_scrape())
 
             # Run the scraper
-            all_profit_data = await scraper.main([card_details])
+            all_profit_data = run_scraper()
 
             if not all_profit_data:
                 return Response(
@@ -119,21 +123,27 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
 
             # Save results to database
             saved_cards = []
-            for card_data in all_profit_data:
-                card_dict = {
-                    'card_name': card_data.card_name,
-                    'set_name': card_data.set_name,
-                    'language': card_data.language,
-                    'rarity': card_data.rarity,
-                    'tcgplayer_price': card_data.tcgplayer_price,
-                    'psa_10_price': card_data.psa_10_price or 0.0,
-                    'price_delta': card_data.price_delta or 0.0,
-                    'profit_potential': card_data.profit_potential or 0.0,
-                    'last_updated': timezone.now()
-                }
-
-                if card := await self.save_card_to_db(card_dict):
-                    saved_cards.append(card)
+            with transaction.atomic():
+                for card_data in all_profit_data:
+                    card_dict = {
+                            'card_name': card_data.card_name,
+                            'set_name': card_data.set_name,
+                            'language': card_data.language,
+                            'rarity': card_data.rarity,
+                            'tcgplayer_price': card_data.tcgplayer_price,
+                            'psa_10_price': card_data.psa_10_price,
+                            'price_delta': card_data.price_delta,
+                            'profit_potential': card_data.profit_potential,
+                        }
+                    
+                    card_record, created = PokemonCard.objects.update_or_create(
+                        card_name=card_dict['card_name'],
+                        set_name=card_dict['set_name'],
+                        language=card_dict['language'],
+                        rarity=card_dict['rarity'],
+                        defaults=card_dict
+                    )
+                    saved_cards.append(card_record)
 
             if not saved_cards:
                 return Response(
@@ -143,11 +153,8 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
 
             # Return saved cards data
             serializer = self.serializer_class(saved_cards, many=True)
-            return Response({
-                'message': f'Successfully processed {len(saved_cards)} cards',
-                'cards': serializer.data
-            })
-
+            return Response(serializer.data)
+        
         except Exception as e:
             logger.error(f"Error processing request: {str(e)}", exc_info=True)
             return Response(
@@ -157,9 +164,7 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     async def refresh(self, request, pk=None):
-        """
-        Refresh data for a specific card
-        """
+        """Refresh data for a specific card"""
         try:
             card = await sync_to_async(PokemonCard.objects.get)(pk=pk)
 
@@ -179,20 +184,16 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                 )
 
             # Update card with new data
-            card_dict = {
-                'tcgplayer_price': updated_data[0].tcgplayer_price,
-                'psa_10_price': updated_data[0].psa_10_price or 0.0,
-                'price_delta': updated_data[0].price_delta or 0.0,
-                'profit_potential': updated_data[0].profit_potential or 0.0,
-                'last_updated': timezone.now()
-            }
+            card_dict = self._create_card_dict(updated_data[0])
+            updated_card = await self.save_card_to_db(card_dict)
 
-            # Save updated data
-            for key, value in card_dict.items():
-                setattr(card, key, value)
-            await sync_to_async(card.save)()
+            if not updated_card:
+                return Response(
+                    {'error': 'Failed to update card'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
 
-            serializer = self.serializer_class(card)
+            serializer = self.serializer_class(updated_card)
             return Response(serializer.data)
 
         except PokemonCard.DoesNotExist:
