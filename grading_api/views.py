@@ -123,9 +123,12 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
     filterset_class = PokemonCardFilter
     pagination_class = StandardResultsSetPagination
 
+     # authentication_classes = [SessionAuthentication, BasicAuthentication]
+    # permission_classes = [IsAuthenticated]
+
     # Add authentication and permission classes
-    authentication_classes = [SessionAuthentication, BasicAuthentication]
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = []
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
