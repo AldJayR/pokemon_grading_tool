@@ -11,7 +11,6 @@ class PokemonCard(models.Model):
     # Core card information
     card_name = models.CharField(max_length=255, db_index=True)
     set_name = models.CharField(max_length=255, db_index=True)
-    # Make product_id nullable initially to handle migration
     product_id = models.CharField(
         max_length=50,
         unique=True,

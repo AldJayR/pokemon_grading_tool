@@ -15,18 +15,11 @@ RUN playwright install chromium --with-deps
 # Copy the rest of your application code
 COPY . .
 
-ENV DJANGO_SETTINGS_MODULE=pokemon_grading_tool.settings
-ENV PYTHONUNBUFFERED=1
-ENV DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
-ENV DEBUG=${DEBUG}
-ENV ALLOWED_HOSTS=${ALLOWED_HOSTS}
-
-# Run migrations (this is the important part)
-RUN python manage.py migrate --noinput
-RUN python manage.py collectstatic
+# Ensure environment variables are loaded
+RUN pip install python-dotenv
 
 # Expose the port your application runs on
 EXPOSE 8000
 
-# Command to run your application
-CMD ["gunicorn", "pokemon_grading_tool.asgi:application", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
+# Run migrations and start Gunicorn at runtime
+CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn pokemon_grading_tool.asgi:application --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000"]
