@@ -1,6 +1,6 @@
 from decimal import Decimal
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 class PokemonCard(models.Model):
@@ -184,11 +184,33 @@ class ScrapeLog(models.Model):
         self.execution_time = self.completed_at - self.started_at
         self.save()
 
+    @transaction.atomic
+    def update_progress(self, success_count=0, failure_count=0):
+        """Atomically update scraping progress metrics."""
+        ScrapeLog.objects.filter(pk=self.pk).update(
+            total_cards_updated=models.F('total_cards_updated') + success_count,
+            total_cards_failed=models.F('total_cards_failed') + failure_count,
+            total_cards_attempted=models.F('total_cards_attempted') + (success_count + failure_count)
+        )
+        self.refresh_from_db()
+
+    @transaction.atomic
+    def log_error(self, error_message, increment_retry=True):
+        """Record an error occurrence with atomic update."""
+        update_kwargs = {
+            'error_message': error_message,
+            'total_cards_failed': models.F('total_cards_failed') + 1
+        }
+        
+        if increment_retry:
+            update_kwargs['retry_count'] = models.F('retry_count') + 1
+            
+        ScrapeLog.objects.filter(pk=self.pk).update(**update_kwargs)
+        self.refresh_from_db()
+
     @property
     def success_rate(self):
         """Calculate the success rate of the scrape."""
         if self.total_cards_attempted == 0:
             return 0
         return (self.total_cards_updated / self.total_cards_attempted) * 100
-
-
