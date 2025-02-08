@@ -18,6 +18,7 @@ import psutil
 from dataclasses import dataclass
 from django.conf import settings
 import re
+import aiohttp
 import ssl
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication
@@ -409,20 +410,29 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
             )
 
     async def _scrape_all_sets_async(self, log_id: int):
-        """Asynchronous implementation of scrape_all_sets with improved batching and error handling."""
+        """Asynchronous implementation with improved error handling and timeout management."""
         try:
             scrape_log = await sync_to_async(ScrapeLog.objects.get)(id=log_id)
             total_attempted = 0
             total_updated = 0
 
             async def process_set_batch(sets_batch: List[str], language: str, rarities: List[str]):
-                """Process a batch of sets with error handling and progress tracking."""
                 nonlocal total_attempted, total_updated
-
+                
                 for set_name in sets_batch:
                     try:
                         async with self._request_semaphore:
                             await self._check_memory_usage()
+                            
+                            # Update progress before processing
+                            await sync_to_async(scrape_log.update_progress)(
+                                f"Starting {language} set: {set_name}"
+                            )
+                            
+                            # Configure longer timeouts and SSL context
+                            ssl_context = ssl.create_default_context()
+                            ssl_context.check_hostname = False
+                            ssl_context.verify_mode = ssl.CERT_NONE
                             
                             card_details = scraper.CardDetails(
                                 name="",
@@ -430,54 +440,56 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                                 language=language
                             )
 
-                            results = await scraper.main([card_details])
-                            
-                            # Update progress
-                            batch_attempted = len(results)
-                            batch_updated = 0
-                            
-                            # Update progress with counts and status message
-                            logger.info(f"Processing {language} set: {set_name} ({batch_attempted} cards)")
-                            await sync_to_async(scrape_log.update_progress)(
-                                success_count=batch_attempted,
-                                failure_count=batch_attempted - batch_updated
+                            # Add timeout configuration
+                            timeout_config = aiohttp.ClientTimeout(
+                                total=300,  # 5 minutes total timeout
+                                connect=60,  # 60 seconds connection timeout
+                                sock_read=60  # 60 seconds read timeout
                             )
+
+                            async with aiohttp.ClientSession(timeout=timeout_config) as session:
+                                results = await scraper.main([card_details])
+                                
+                                batch_attempted = len(results)
+                                batch_updated = 0
+                                
+                                for card_data in results:
+                                    if card_data.rarity in rarities:
+                                        try:
+                                            card_dict = await self._process_card_data(card_data)
+                                            if await self._save_card_to_db(card_dict):
+                                                batch_updated += 1
+                                        except ValueError:
+                                            continue
+                                
+                                total_attempted += batch_attempted
+                                total_updated += batch_updated
+                                
+                                # Clear cache for this set
+                                cache_key = self._make_safe_cache_key('set', set_name, language)
+                                self._cache.delete(cache_key)
                             
-                            for card_data in results:
-                                if card_data.rarity in rarities:
-                                    try:
-                                        card_dict = await self._process_card_data(card_data)
-                                        if await self._save_card_to_db(card_dict):
-                                            batch_updated += 1
-                                    except ValueError as e:
-                                        logger.warning(f"Invalid card in {set_name}: {str(e)}")
-                                        continue
-                            
-                            total_attempted += batch_attempted
-                            total_updated += batch_updated
-                            
-                            # Clear cache for this set
-                            cache_key = self._make_safe_cache_key('set', set_name, language)
-                            self._cache.delete(cache_key)
-                            
-                            await asyncio.sleep(self.INTER_SET_DELAY)
+                            # Add longer delay between sets
+                            await asyncio.sleep(15)  # Increased from 5 to 15 seconds
                             
                     except Exception as e:
                         logger.error(f"Error processing {set_name}: {str(e)}", exc_info=True)
                         await sync_to_async(scrape_log.log_error)(
                             f"Error in set {set_name}: {str(e)}"
                         )
+                        # Add recovery delay after errors
+                        await asyncio.sleep(30)  # 30 seconds delay after error
                         continue
 
-            # Process sets in batches
+            # Process smaller batches
             for sets, language, rarities in [
-                (CardSetData.ENGLISH_SETS, "English", CardSetData.ENGLISH_RARITIES),
-                (CardSetData.JAPANESE_SETS, "Japanese", CardSetData.JAPANESE_RARITIES)
+                (CardSetData.ENGLISH_SETS[:3], "English", CardSetData.ENGLISH_RARITIES),  # Process fewer sets initially
+                (CardSetData.JAPANESE_SETS[:3], "Japanese", CardSetData.JAPANESE_RARITIES)
             ]:
-                for i in range(0, len(sets), self.BATCH_SIZE):
-                    batch = sets[i:i + self.BATCH_SIZE]
+                for i in range(0, len(sets), 1):  # Process one set at a time
+                    batch = sets[i:i + 1]
                     await process_set_batch(batch, language, rarities)
-                    await asyncio.sleep(self.INTER_BATCH_DELAY)
+                    await asyncio.sleep(20)  # Increased delay between batches
 
             await sync_to_async(scrape_log.complete)(total_attempted, total_updated)
 

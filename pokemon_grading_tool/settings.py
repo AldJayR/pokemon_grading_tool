@@ -161,6 +161,12 @@ POKEMON_CARD_SETTINGS.update({
     'POKEMON_CARD_ERROR_RETRY_DELAY': 30,  # seconds
     'POKEMON_CARD_MAX_ERRORS_BEFORE_ABORT': 5,
     'POKEMON_CARD_ERROR_COOLDOWN': 300,  # 5 minutes
+    'POKEMON_CARD_MAX_CONCURRENT_REQUESTS': 1,  # Reduce concurrency
+    'POKEMON_CARD_BATCH_SIZE': 1,  # Process one set at a time
+    'POKEMON_CARD_INTER_SET_DELAY': 15,  # Longer delays between sets
+    'POKEMON_CARD_INTER_BATCH_DELAY': 20,  # Longer delays between batches
+    'POKEMON_CARD_ERROR_RETRY_DELAY': 30,
+    'POKEMON_CARD_MAX_RETRIES': 3,
 })
 
 locals().update(POKEMON_CARD_SETTINGS)
