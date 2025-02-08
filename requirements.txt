@@ -16,5 +16,6 @@ psutil===6.1.1
 psycopg2-binary==2.9.9
 python-dotenv==1.0.0
 ratelimit==2.2.1
+redis==5.2.1
 uvicorn[standard]==0.24.0
 whitenoise==6.6.0
