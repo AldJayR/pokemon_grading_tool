@@ -190,7 +190,7 @@ class ScrapeLog(models.Model):
         ScrapeLog.objects.filter(pk=self.pk).update(
             total_cards_updated=models.F('total_cards_updated') + success_count,
             total_cards_failed=models.F('total_cards_failed') + failure_count,
-            total_cards_attempted=models.F('total_cards_attempted') + (success_count + failure_count)
+            total_cards_attempted=models.F('total_cards_attempted') + (int(success_count) + int(failure_count))
         )
         self.refresh_from_db()
 
