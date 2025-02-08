@@ -1,68 +1,195 @@
+from decimal import Decimal
+from django.core.validators import MinValueValidator
 from django.db import models
-from django.core.validators import MinValueValidator, MaxValueValidator
+from django.utils import timezone
 
 class PokemonCard(models.Model):
-    LANGUAGE_CHOICES = [
-        ('English', 'English'),
-        ('Japanese', 'Japanese'),
-    ]
-    
+    class Language(models.TextChoices):
+        ENGLISH = 'English', 'English'
+        JAPANESE = 'Japanese', 'Japanese'
+
+    # Core card information
     card_name = models.CharField(max_length=255, db_index=True)
     set_name = models.CharField(max_length=255, db_index=True)
+    # Make product_id nullable initially to handle migration
+    product_id = models.CharField(
+        max_length=50,
+        unique=True,
+        db_index=True,
+        null=True,
+        blank=True,
+    )
+    card_number = models.CharField(max_length=50, blank=True)
+
+    # Card details
     language = models.CharField(
         max_length=20,
-        choices=LANGUAGE_CHOICES,
-        default='English'
+        choices=Language.choices,
+        default=Language.ENGLISH,
     )
     rarity = models.CharField(max_length=100, default="Unknown")
-    
-    # Price information
+
+    # Price tracking fields
+
     tcgplayer_price = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         null=True,
         blank=True,
-        validators=[MinValueValidator(0)]
+        validators=[MinValueValidator(Decimal('0.00'))],
     )
+    tcgplayer_market_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal('0.00'))],
+    )
+    tcgplayer_last_pulled = models.DateTimeField(null=True, blank=True)
+
     psa_10_price = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         null=True,
         blank=True,
-        validators=[MinValueValidator(0)]
+        validators=[MinValueValidator(Decimal('0.00'))],
     )
-    price_delta = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        null=True,
-        blank=True
-    )
-    profit_potential = models.DecimalField(
-        max_digits=7,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        validators=[MinValueValidator(-100), MaxValueValidator(1000)]
-    )
-    
+    ebay_last_pulled = models.DateTimeField(null=True, blank=True)
+
     # Metadata
+    is_active = models.BooleanField(default=True)
     last_updated = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         indexes = [
             models.Index(fields=['card_name', 'set_name', 'language']),
-            models.Index(fields=['-profit_potential']),
             models.Index(fields=['last_updated']),
+            models.Index(fields=['product_id']),
+            models.Index(fields=['is_active', 'last_updated']),
         ]
         unique_together = ['card_name', 'set_name', 'language', 'rarity']
-        ordering = ['-profit_potential', 'card_name']
+        ordering = ['card_name']
 
     def __str__(self):
-        return f"{self.card_name} ({self.set_name}) - {self.rarity}"
+        return f"{self.card_name} ({self.set_name}) - {self.rarity} - {self.language}"
 
-    def clean(self):
-        if self.tcgplayer_price and self.psa_10_price:
-            self.price_delta = self.psa_10_price - self.tcgplayer_price
-            if self.tcgplayer_price > 0:
-                self.profit_potential = (self.price_delta / self.tcgplayer_price) * 100
+    @property
+    def price_delta(self):
+        """Calculate the difference between PSA 10 and TCGPlayer prices."""
+        if self.psa_10_price is None or self.tcgplayer_price is None:
+            return None
+        return self.psa_10_price - self.tcgplayer_price
+
+    @property
+    def profit_potential(self):
+        """Calculate the potential profit percentage."""
+        if (delta := self.price_delta) is not None and self.tcgplayer_price:
+            return (delta / self.tcgplayer_price) * 100 if self.tcgplayer_price > 0 else None
+        return None
+
+    def update_tcgplayer_data(self, price, market_price, product_id):
+        """Update TCGPlayer data with validation."""
+        if price < 0 or (market_price is not None and market_price < 0):
+            raise ValueError("Prices cannot be negative")
+        if not product_id:
+            raise ValueError("Product ID cannot be empty")
+            
+        self.tcgplayer_price = price
+        self.tcgplayer_market_price = market_price
+        self.product_id = product_id
+        self.tcgplayer_last_pulled = timezone.now()
+        self.save()
+
+    def update_ebay_data(self, psa_10_price):
+        """Update eBay PSA 10 price data with validation."""
+        if psa_10_price < 0:
+            raise ValueError("PSA 10 price cannot be negative")
+            
+        self.psa_10_price = psa_10_price
+        self.ebay_last_pulled = timezone.now()
+        self.save()
+
+class ScrapeLog(models.Model):
+    class Status(models.TextChoices):
+        IN_PROGRESS = 'in_progress', 'In Progress'
+        COMPLETED = 'completed', 'Completed'
+        FAILED = 'failed', 'Failed'
+        PARTIAL = 'partial', 'Partially Completed'  # New status
+
+    class Source(models.TextChoices):  # New enum
+        TCGPLAYER = 'tcgplayer', 'TCGPlayer'
+        EBAY = 'ebay', 'eBay'
+        ALL = 'all', 'All Sources'
+
+    # Basic information
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    user = models.CharField(max_length=255)
+    
+    # Scraping source and status
+    source = models.CharField(
+        max_length=20,
+        choices=Source.choices,
+        default=Source.ALL,
+    )
+    status = models.CharField(
+        max_length=50,
+        choices=Status.choices,
+        default=Status.IN_PROGRESS,
+    )
+
+    # Statistics
+    total_cards_attempted = models.PositiveIntegerField(default=0)
+    total_cards_updated = models.PositiveIntegerField(default=0)
+    total_cards_failed = models.PositiveIntegerField(default=0)  # New field
+    
+    # Error tracking
+    error_message = models.TextField(null=True, blank=True)
+    retry_count = models.PositiveSmallIntegerField(default=0)  # New field
+    
+    # Performance metrics
+    execution_time = models.DurationField(null=True, blank=True)  # New field
+
+    class Meta:
+        ordering = ['-started_at']
+        indexes = [
+            models.Index(fields=['status', 'started_at']),  # New index
+            models.Index(fields=['user', 'started_at']),    # New index
+        ]
+
+    def __str__(self):
+        duration = self.execution_time or ''
+        return f"Scrape by {self.user} at {self.started_at} - Status: {self.status} {duration}"
+
+    def complete(self, total_cards_attempted, total_cards_updated, total_cards_failed=0):
+        """Mark the scrape as complete with statistics."""
+        self.completed_at = timezone.now()
+        self.status = self.Status.COMPLETED
+        self.total_cards_attempted = total_cards_attempted
+        self.total_cards_updated = total_cards_updated
+        self.total_cards_failed = total_cards_failed
+        self.execution_time = self.completed_at - self.started_at
+        
+        # Set partial status if not all cards were updated
+        if total_cards_failed > 0:
+            self.status = self.Status.PARTIAL
+            
+        self.save()
+
+    def fail(self, error_message):
+        """Mark the scrape as failed with error details."""
+        self.completed_at = timezone.now()
+        self.status = self.Status.FAILED
+        self.error_message = error_message
+        self.execution_time = self.completed_at - self.started_at
+        self.save()
+
+    @property
+    def success_rate(self):
+        """Calculate the success rate of the scrape."""
+        if self.total_cards_attempted == 0:
+            return 0
+        return (self.total_cards_updated / self.total_cards_attempted) * 100
+
+

@@ -15,6 +15,7 @@ develop-eggs/
 lib/
 lib64/
 venv/
+myenv/
 .env
 
 # Django
