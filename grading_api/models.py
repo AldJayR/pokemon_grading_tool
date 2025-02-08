@@ -153,6 +153,7 @@ class ScrapeLog(models.Model):
     
     # Performance metrics
     execution_time = models.DurationField(null=True, blank=True)  # New field
+    progress_message = models.TextField(default="", blank=True)  # Add this field
 
     class Meta:
         ordering = ['-started_at']
@@ -189,13 +190,15 @@ class ScrapeLog(models.Model):
         self.save()
 
     @transaction.atomic
-    def update_progress(self, success_count=0, failure_count=0):
-        """Atomically update scraping progress metrics."""
-        ScrapeLog.objects.filter(pk=self.pk).update(
-            total_cards_updated=models.F('total_cards_updated') + success_count,
-            total_cards_failed=models.F('total_cards_failed') + failure_count,
-            total_cards_attempted=models.F('total_cards_attempted') + (int(success_count) + int(failure_count))
-        )
+    def update_progress(self, message: str = "", success_count: int = 0, failure_count: int = 0):
+        """Update progress with both message and counts."""
+        update_fields = {
+            'total_cards_attempted': models.F('total_cards_attempted') + (success_count + failure_count),
+            'total_cards_updated': models.F('total_cards_updated') + success_count,
+            'total_cards_failed': models.F('total_cards_failed') + failure_count,
+            'progress_message': message
+        }
+        ScrapeLog.objects.filter(pk=self.pk).update(**update_fields)
         self.refresh_from_db()
 
     @transaction.atomic

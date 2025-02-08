@@ -424,9 +424,11 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                         async with self._request_semaphore:
                             await self._check_memory_usage()
                             
-                            # Update progress before processing
+                            # Update progress message separately from counts
                             await sync_to_async(scrape_log.update_progress)(
-                                f"Starting {language} set: {set_name}"
+                                message=f"Starting {language} set: {set_name}",
+                                success_count=0,
+                                failure_count=0
                             )
                             
                             # Configure longer timeouts and SSL context
@@ -472,10 +474,22 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                             # Add longer delay between sets
                             await asyncio.sleep(15)  # Increased from 5 to 15 seconds
                             
+                            # Update counts after processing
+                            await sync_to_async(scrape_log.update_progress)(
+                                message=f"Completed {language} set: {set_name}",
+                                success_count=batch_updated,
+                                failure_count=batch_attempted - batch_updated
+                            )
+                            
                     except Exception as e:
                         logger.error(f"Error processing {set_name}: {str(e)}", exc_info=True)
                         await sync_to_async(scrape_log.log_error)(
                             f"Error in set {set_name}: {str(e)}"
+                        )
+                        await sync_to_async(scrape_log.update_progress)(
+                            message=f"Failed {language} set: {set_name}",
+                            success_count=0,
+                            failure_count=1
                         )
                         # Add recovery delay after errors
                         await asyncio.sleep(30)  # 30 seconds delay after error
