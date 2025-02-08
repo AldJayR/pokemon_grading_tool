@@ -110,7 +110,9 @@ CACHES = {
         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
         'LOCATION': os.environ.get('REDIS_URL', 'redis://localhost:6379/0'),
         'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            'db': '0',
+            'parser_class': 'redis.connection.PythonParser',
+            'pool_class': 'redis.connection.BlockingConnectionPool',
         }
     }
 }

@@ -212,13 +212,13 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
         )
 
     def _make_safe_cache_key(self, *args) -> str:
-        """Create a memcached-safe cache key."""
-        # Join args and replace invalid characters
-        unsafe_key = ':'.join(str(arg) for arg in args if arg)
-        # Replace invalid characters with underscores
-        safe_key = re.sub(r'[^a-zA-Z0-9_-]', '_', unsafe_key)
-        # Ensure key length is under memcached's limit (250 chars)
-        return safe_key[:250]
+        """Create a Redis-safe cache key."""
+        # Join args and clean invalid characters
+        key_parts = [str(arg).replace(' ', '_').replace(':', '_') for arg in args if arg]
+        safe_key = '_'.join(key_parts)
+        # Remove any other problematic characters
+        safe_key = re.sub(r'[^a-zA-Z0-9_-]', '', safe_key)
+        return f"card_{safe_key}"[:250]
 
     def _get_ssl_context(self):
         """Create a secure SSL context for HTTPS requests."""
@@ -457,7 +457,7 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                             total_updated += batch_updated
                             
                             # Clear cache for this set
-                            cache_key = f"scrape::{set_name}:{language}"
+                            cache_key = self._make_safe_cache_key('set', set_name, language)
                             self._cache.delete(cache_key)
                             
                             await asyncio.sleep(self.INTER_SET_DELAY)
