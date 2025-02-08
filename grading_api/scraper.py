@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from aiohttp import ClientTimeout
 import aiofiles
 import json
+import gc
+import psutil
 
 # Data classes for type safety and better structure
 @dataclass
@@ -40,15 +42,16 @@ class CardPriceData:
 # Configuration
 @dataclass(frozen=True)
 class Config:
+    # Reduce resource usage for containerized environment
     ONE_MINUTE: int = 60
-    MAX_REQUESTS_TCG: int = 30
-    MAX_REQUESTS_EBAY: int = 20
+    MAX_REQUESTS_TCG: int = 10  # Reduced from 30
+    MAX_REQUESTS_EBAY: int = 8   # Reduced from 20
     CACHE_HOURS: int = 24
     MAX_RETRIES: int = 3
     RETRY_DELAYS: tuple = (5, 10, 20)
-    TIMEOUT: int = 60
-    TIMEOUT_SECONDS: int = 60
-    CONCURRENCY: int = 5
+    TIMEOUT: int = 30           # Reduced from 60
+    TIMEOUT_SECONDS: int = 30   # Reduced from 60
+    CONCURRENCY: int = 2        # Reduced from 5
     
     def __post_init__(self):
         assert all([
@@ -185,42 +188,49 @@ class RequestError(Exception):
     pass
 
 async def fetch_tcgplayer_data(card_details: CardDetails, context) -> List[CardPriceData]:
-    """
-    Enhanced TCGPlayer data fetching with better error handling and typing
-    """
-    logger.info(f"Starting fetch_tcgplayer_data for {card_details.name}")
-    if card_details.language not in Config.RARITY_MAPPING:
-        raise ValueError(f"Unsupported language: {card_details.language}")
-
-    async with playwright_sem:
+    """Enhanced TCGPlayer data fetching with context reuse"""
+    try:
         page = await context.new_page()
-        await page.route("**/*.{png,jpg,jpeg}", lambda route: route.abort())
+        page.set_default_timeout(30000)  # 30 second timeout
+        
+        # Enable request interception to block unnecessary resources
+        await page.route("**/*", lambda route: route.abort() 
+            if route.request.resource_type in ['image', 'stylesheet', 'font'] 
+            else route.continue_())
+        
+        logger.info(f"Starting fetch_tcgplayer_data for {card_details.name}")
+        if card_details.language not in Config.RARITY_MAPPING:
+            raise ValueError(f"Unsupported language: {card_details.language}")
 
-        all_card_data = []
-        for rarity in Config.RARITY_MAPPING[card_details.language]:
-            async with AsyncRateLimiter(Config.MAX_REQUESTS_TCG, Config.ONE_MINUTE):
-                for attempt in range(Config.MAX_RETRIES):
-                    try:
-                        url = build_tcgplayer_url(card_details, rarity)
-                        logger.info(f"Accessing URL: {url}")
+        async with playwright_sem:
+            all_card_data = []
+            for rarity in Config.RARITY_MAPPING[card_details.language]:
+                async with AsyncRateLimiter(Config.MAX_REQUESTS_TCG, Config.ONE_MINUTE):
+                    for attempt in range(Config.MAX_RETRIES):
+                        try:
+                            url = build_tcgplayer_url(card_details, rarity)
+                            logger.info(f"Accessing URL: {url}")
 
-                        await page.goto(url, wait_until="networkidle", timeout=60000)
-                        logger.info("Page loaded")
-                        
-                        if results := await fetch_and_process_page(page, card_details, rarity):
-                            all_card_data.extend(results)
-                        break
-                    except Exception as e:
-                        safe_log(f"Rarity {rarity} attempt {attempt+1} failed: {str(e)}")
-                        if attempt == Config.MAX_RETRIES - 1:
-                            safe_log(f"Failed all {Config.MAX_RETRIES} attempts for {rarity}")
-                        await asyncio.sleep(Config.RETRY_DELAYS[attempt])
+                            await page.goto(url, wait_until="networkidle", timeout=60000)
+                            logger.info("Page loaded")
+                            
+                            if results := await fetch_and_process_page(page, card_details, rarity):
+                                all_card_data.extend(results)
+                            break
+                        except Exception as e:
+                            safe_log(f"Rarity {rarity} attempt {attempt+1} failed: {str(e)}")
+                            if attempt == Config.MAX_RETRIES - 1:
+                                safe_log(f"Failed all {Config.MAX_RETRIES} attempts for {rarity}")
+                            await asyncio.sleep(Config.RETRY_DELAYS[attempt])
 
+        return all_card_data
+    except Exception as e:
+        logger.error(f"Error in fetch_tcgplayer_data: {e}")
+        return []
+    finally:
         await page.close()
 
-    return all_card_data
-
-def build_tcgplayer_url(card_details: CardDetails, rarity: str) -> str:
+def build_tcgplayer_url(card_details: CardDetails, rarity: str, page: int = 1) -> str:
     """Constructs the TCGPlayer URL based on card details"""
     base = "https://www.tcgplayer.com/search/pokemon"
     if card_details.language == "Japanese":
@@ -229,7 +239,7 @@ def build_tcgplayer_url(card_details: CardDetails, rarity: str) -> str:
     params = {
         "productLineName": "pokemon" if card_details.language == "English" else "pokemon-japan",
         "view": "grid",
-        "page": "1",
+        "page": str(page),
         "ProductTypeName": "Cards",
         "Rarity": rarity.replace(" ", "+")
     }
@@ -248,42 +258,67 @@ def build_tcgplayer_url(card_details: CardDetails, rarity: str) -> str:
     return f"{base}/product?{query_string}"
 
 async def fetch_and_process_page(page, card_details: CardDetails, rarity: str) -> List[CardPriceData]:
-    """Fetches and processes a single TCGPlayer page"""
+    """Fetches and processes TCGPlayer pages with pagination"""
+    all_results = []
+    page_num = 1
+    max_pages = 5  # Limit pages to avoid infinite loops
+    
     try:
-        logger.info(f"Waiting for search results or blank slate for {card_details.name}")
-        
-        # Wait for either search results or blank slate
-        await page.wait_for_selector(".search-result, .blank-slate", timeout=60000)
-        
-        # Check which selector is present
-        has_results = await page.locator(".search-result").count() > 0
-        has_blank = await page.locator(".blank-slate").count() > 0
-        
-        if has_blank:
-            logger.info(f"No results found for {card_details.name} with rarity {rarity}")
-            return []
+        while page_num <= max_pages:
+            logger.info(f"Processing page {page_num} for {card_details.name}")
             
-        if has_results:
-            logger.info(f"Found search results for {card_details.name} with rarity {rarity}")
-            html = await page.content()
-            logger.info(f"HTML content length: {len(html)}")
+            # Modify URL for pagination
+            current_url = page.url
+            if page_num > 1:
+                if 'page=' in current_url:
+                    new_url = re.sub(r'page=\d+', f'page={page_num}', current_url)
+                else:
+                    new_url = f"{current_url}&page={page_num}"
+                await page.goto(new_url, wait_until="networkidle")
             
-            soup = BeautifulSoup(html, 'lxml')
-            results = process_card_elements(soup, card_details, rarity)
-            
-            if results:
-                logger.info(f"Successfully processed {len(results)} cards for {card_details.name}")
-            else:
-                logger.warning(f"No valid cards found after processing for {card_details.name}")
-            
-            return results
+            # Wait for either search results or blank slate
+            try:
+                await page.wait_for_selector(".search-result, .blank-slate", timeout=30000)
+                
+                # Check which selector is present
+                has_results = await page.locator(".search-result").count() > 0
+                has_blank = await page.locator(".blank-slate").count() > 0
+                
+                if has_blank:
+                    break  # No more results
+                    
+                if has_results:
+                    html = await page.content()
+                    soup = BeautifulSoup(html, 'lxml')
+                    
+                    # Process current page results
+                    results = process_card_elements(soup, card_details, rarity)
+                    if results:
+                        all_results.extend(results)
+                        
+                    # Check for next page button
+                    next_button = await page.query_selector('button[aria-label="Next Page"]')
+                    if not next_button or await next_button.is_disabled():
+                        break  # No more pages
+                        
+                    page_num += 1
+                    
+                    # Clear memory every few pages
+                    if page_num % 3 == 0:
+                        clear_memory()
+                else:
+                    break
+                    
+            except Exception as e:
+                logger.error(f"Error on page {page_num}: {str(e)}")
+                break
+                
+        logger.info(f"Processed {len(all_results)} total cards across {page_num} pages")
+        return all_results
         
-        logger.warning(f"Neither search results nor blank slate found for {card_details.name}")
-        return []
-
     except Exception as e:
-        logger.error(f"Error processing page for {card_details.name}: {str(e)}")
-        return []
+        logger.error(f"Error processing pages for {card_details.name}: {str(e)}")
+        return all_results
 
 def process_card_elements(soup: BeautifulSoup, card_details: CardDetails, rarity: str) -> List[CardPriceData]:
     cards = []
@@ -532,42 +567,84 @@ async def process_card_batch(
         pass
 
 async def main(card_details_list: List[CardDetails]) -> List[CardPriceData]:
-    await price_cache.async_load_cache()
+    retry_count = 0
+    max_retries = 3
     
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    '--disable-dev-shm-usage',
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-gpu',
-                    '--disable-software-rasterizer',
-                ],
-            )
-            context = await browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                ignore_https_errors=True
-            )
-            
+    while retry_count < max_retries:
+        try:
+            await price_cache.async_load_cache()
+    
             try:
-                async with aiohttp.ClientSession(
-                    connector=aiohttp.TCPConnector(limit=Config.CONCURRENCY),
-                    timeout=ClientTimeout(total=Config.TIMEOUT)
-                ) as session:
-                    results = await process_card_batch(card_details_list, context, session)
-                    return results
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(
+                        headless=True,
+                        args=[
+                            '--disable-dev-shm-usage',
+                            '--no-sandbox',
+                            '--disable-setuid-sandbox',
+                            '--disable-gpu',
+                            '--disable-software-rasterizer',
+                            '--disable-dev-shm-usage',
+                            '--no-zygote',
+                            '--single-process',
+                            '--memory-pressure-off',
+                        ],
+                    )
+                    context = await browser.new_context(
+                        viewport={'width': 1920, 'height': 1080},
+                        ignore_https_errors=True
+                    )
+                    
+                    try:
+                        async with aiohttp.ClientSession(
+                            connector=aiohttp.TCPConnector(limit=Config.CONCURRENCY),
+                            timeout=ClientTimeout(total=Config.TIMEOUT)
+                        ) as session:
+                            results = await process_card_batch(card_details_list, context, session)
+                            return results
+                    finally:
+                        await context.close()
+                        await browser.close()
+                        
+            except Exception as e:
+                safe_log(f"Critical error in main: {str(e)}")
+                raise
             finally:
-                await context.close()
-                await browser.close()
-                
-    except Exception as e:
-        safe_log(f"Critical error in main: {str(e)}")
-        raise
-    finally:
-        await price_cache.save_cache()
+                await price_cache.save_cache()
+        except Exception as e:
+            retry_count += 1
+            logger.error(f"Attempt {retry_count} failed: {e}")
+            await asyncio.sleep(10 * retry_count)
+            continue
 
+async def process_sets_in_batches(sets_to_process: List[str], batch_size: int = 2):
+    """Process sets in smaller batches to avoid memory issues"""
+    for i in range(0, len(sets_to_process), batch_size):
+        batch = sets_to_process[i:i + batch_size]
+        try:
+            cards_to_fetch = [
+                CardDetails(name="", set_name=set_name, language="English")
+                for set_name in batch
+            ]
+            results = await main(cards_to_fetch)
+            # Save results after each batch
+            await save_batch_results(results, f"batch_{i}.json")
+            # Add delay between batches
+            await asyncio.sleep(10)
+        except Exception as e:
+            logger.error(f"Error processing batch {i}: {e}")
+            continue
+
+async def save_batch_results(results: List[CardPriceData], filename: str):
+    """Save batch results to a JSON file."""
+    async with aiofiles.open(filename, 'w') as f:
+        await f.write(json.dumps([result.__dict__ for result in results], default=str))
+
+def clear_memory():
+    """Force garbage collection and clear memory"""
+    gc.collect()
+    process = psutil.Process()
+    process.memory_info()
 
 if __name__ == "__main__":
     cards_to_fetch = [
