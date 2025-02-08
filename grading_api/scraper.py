@@ -532,13 +532,24 @@ async def process_card_batch(
         pass
 
 async def main(card_details_list: List[CardDetails]) -> List[CardPriceData]:
-    await price_cache.async_load_cache()  # Initialize cache asynchronously
+    await price_cache.async_load_cache()
     
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
-    
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    '--disable-dev-shm-usage',
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-gpu',
+                    '--disable-software-rasterizer',
+                ],
+            )
+            context = await browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                ignore_https_errors=True
+            )
             
             try:
                 async with aiohttp.ClientSession(
