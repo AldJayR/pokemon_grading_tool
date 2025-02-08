@@ -17,6 +17,10 @@ import gc
 import psutil
 from dataclasses import dataclass
 from django.conf import settings
+import re
+import ssl
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.authentication import SessionAuthentication, BasicAuthentication
 
 from .models import PokemonCard, ScrapeLog
 from .serializers import PokemonCardSerializer
@@ -119,6 +123,10 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
     filterset_class = PokemonCardFilter
     pagination_class = StandardResultsSetPagination
 
+    # Add authentication and permission classes
+    authentication_classes = [SessionAuthentication, BasicAuthentication]
+    permission_classes = [IsAuthenticated]
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._request_semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_REQUESTS)
@@ -200,13 +208,29 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
+    def _make_safe_cache_key(self, *args) -> str:
+        """Create a memcached-safe cache key."""
+        # Join args and replace invalid characters
+        unsafe_key = ':'.join(str(arg) for arg in args if arg)
+        # Replace invalid characters with underscores
+        safe_key = re.sub(r'[^a-zA-Z0-9_-]', '_', unsafe_key)
+        # Ensure key length is under memcached's limit (250 chars)
+        return safe_key[:250]
+
+    def _get_ssl_context(self):
+        """Create a secure SSL context for HTTPS requests."""
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE if settings.DEBUG else ssl.CERT_REQUIRED
+        return ssl_context
+
     @action(detail=False, methods=['get'])
     def scrape_and_save(self, request):
         """Endpoint to scrape and save card data."""
         return async_to_sync(self._scrape_and_save_async)(request)
 
     async def _scrape_and_save_async(self, request):
-        """Asynchronous implementation of scrape_and_save with improved error handling."""
+        """Asynchronous implementation of scrape_and_save with safe cache keys."""
         search_query = request.query_params.get('searchQuery', '').strip()
         set_name = request.query_params.get('set_name', '').strip()
         language = request.query_params.get('language', 'English')
@@ -218,7 +242,8 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        cache_key = f"scrape:{search_query}:{set_name}:{language}"
+        # Create safe cache key
+        cache_key = self._make_safe_cache_key('scrape', search_query, set_name, language)
         cached_result = self._cache.get(cache_key)
         if cached_result:
             return Response(cached_result)
@@ -290,6 +315,9 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
         user = str(request.user if request.user.is_authenticated else 'anonymous')
         try:
             card = await sync_to_async(PokemonCard.objects.select_for_update().get)(pk=pk)
+            
+            # Use safe cache key
+            cache_key = self._make_safe_cache_key('card', card.card_name, card.set_name, card.language)
 
             if not card.product_id:
                 return Response(
@@ -348,14 +376,35 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def scrape_all_sets(self, request):
         """Scrape all sets concurrently and save to database."""
-        user = str(request.user if request.user.is_authenticated else 'anonymous')
-        scrape_log = ScrapeLog.objects.create(user=user)
-        async_to_sync(self._scrape_all_sets_async)(scrape_log.id)
+        try:
+            # Add CSRF validation
+            if not request.user.is_authenticated:
+                return Response(
+                    {'error': 'Authentication required'},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
 
-        return Response({
-            'message': 'Bulk scrape started',
-            'log_id': scrape_log.id
-        })
+            user = str(request.user)
+            scrape_log = ScrapeLog.objects.create(user=user)
+
+            # Start async task with SSL context
+            async_to_sync(self._scrape_all_sets_async)(
+                scrape_log.id, 
+                ssl_context=self._get_ssl_context()
+            )
+
+            return Response({
+                'message': 'Bulk scrape started',
+                'log_id': scrape_log.id,
+                'status': 'processing'
+            })
+
+        except Exception as e:
+            logger.error(f"Failed to start bulk scrape: {str(e)}", exc_info=True)
+            return Response(
+                {'error': f'Failed to start scraping: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
     async def _scrape_all_sets_async(self, log_id: int):
         """Asynchronous implementation of scrape_all_sets with improved batching and error handling."""
