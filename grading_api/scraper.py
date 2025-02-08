@@ -46,9 +46,9 @@ class Config:
     CACHE_HOURS: int = 24
     MAX_RETRIES: int = 3
     RETRY_DELAYS: tuple = (5, 10, 20)
-    TIMEOUT: int = 30
-    TIMEOUT_SECONDS: int = 30
-    CONCURRENCY: int = 10
+    TIMEOUT: int = 60
+    TIMEOUT_SECONDS: int = 60
+    CONCURRENCY: int = 5
     
     def __post_init__(self):
         assert all([
@@ -250,20 +250,39 @@ def build_tcgplayer_url(card_details: CardDetails, rarity: str) -> str:
 async def fetch_and_process_page(page, card_details: CardDetails, rarity: str) -> List[CardPriceData]:
     """Fetches and processes a single TCGPlayer page"""
     try:
-        logger.info("Waiting for selector")
+        logger.info(f"Waiting for search results or blank slate for {card_details.name}")
+        
+        # Wait for either search results or blank slate
         await page.wait_for_selector(".search-result, .blank-slate", timeout=30000)
-
-        logger.info("Getting page content")
-        html = await page.content()
-
-        logger.info(f"HTML length: {len(html)}")
-        soup = BeautifulSoup(html, 'lxml')
-        results = process_card_elements(soup, card_details, rarity)
-        logger.info(f"Found {len(results)} cards")
-        return results
+        
+        # Check which selector is present
+        has_results = await page.locator(".search-result").count() > 0
+        has_blank = await page.locator(".blank-slate").count() > 0
+        
+        if has_blank:
+            logger.info(f"No results found for {card_details.name} with rarity {rarity}")
+            return []
+            
+        if has_results:
+            logger.info(f"Found search results for {card_details.name} with rarity {rarity}")
+            html = await page.content()
+            logger.info(f"HTML content length: {len(html)}")
+            
+            soup = BeautifulSoup(html, 'lxml')
+            results = process_card_elements(soup, card_details, rarity)
+            
+            if results:
+                logger.info(f"Successfully processed {len(results)} cards for {card_details.name}")
+            else:
+                logger.warning(f"No valid cards found after processing for {card_details.name}")
+            
+            return results
+        
+        logger.warning(f"Neither search results nor blank slate found for {card_details.name}")
+        return []
 
     except Exception as e:
-        logger.warning(f"Error processing page: {str(e)}")
+        logger.error(f"Error processing page for {card_details.name}: {str(e)}")
         return []
 
 def process_card_elements(soup: BeautifulSoup, card_details: CardDetails, rarity: str) -> List[CardPriceData]:
@@ -518,9 +537,8 @@ async def main(card_details_list: List[CardDetails]) -> List[CardPriceData]:
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-            )
+            context = await browser.new_context()
+    
             
             try:
                 async with aiohttp.ClientSession(
