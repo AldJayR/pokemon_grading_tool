@@ -181,7 +181,14 @@ LOGGING = {
 
 # Database Configuration
 DATABASES = {
-    'default': dj_database_url.config(default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}")
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql_psycopg2',
+        'NAME': os.environ["PGDATABASE"],
+        'USER': os.environ["PGUSER"],
+        'PASSWORD': os.environ["PGPASSWORD"],
+        'HOST': os.environ["PGHOST"],  
+        'PORT': os.environ["PGPORT"],    
+    }
 }
 
 CACHE_MIDDLEWARE_SECONDS = 3600

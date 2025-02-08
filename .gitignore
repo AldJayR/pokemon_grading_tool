@@ -39,3 +39,8 @@ staticfiles/
 # Environment variables
 .env
 .env.local
+
+# PNPM
+node_modules/
+package.json
+pnpm-lock.yaml
