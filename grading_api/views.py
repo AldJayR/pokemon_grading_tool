@@ -391,10 +391,8 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
             user = 'anonymous'
             scrape_log = ScrapeLog.objects.create(user=user)
 
-            # Start async task with SSL context
             async_to_sync(self._scrape_all_sets_async)(
-                scrape_log.id, 
-                ssl_context=self._get_ssl_context()
+                scrape_log.id
             )
 
             return Response({
