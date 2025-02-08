@@ -13,6 +13,8 @@ from typing import List, Optional, Dict, Any
 import asyncio
 from datetime import timedelta
 from rest_framework.pagination import PageNumberPagination
+import gc
+import psutil
 
 from .models import PokemonCard, ScrapeLog
 from .serializers import PokemonCardSerializer
@@ -85,7 +87,11 @@ class StandardResultsSetPagination(PageNumberPagination):
 
 class PokemonCardViewSet(viewsets.ModelViewSet):
     CACHE_TIMEOUT = 3600
-    MAX_CONCURRENT_REQUESTS = 3
+    MAX_CONCURRENT_REQUESTS = 2  # Reduced from 3
+    BATCH_SIZE = 2
+    INTER_SET_DELAY = 5  # seconds between sets
+    INTER_BATCH_DELAY = 10  # seconds between batches
+    MAX_RETRIES_PER_SET = 3
     pagination_class = StandardResultsSetPagination  # Add pagination
 
     queryset = PokemonCard.objects.all()
@@ -155,6 +161,15 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
         elif set_name:
             return scraper.CardDetails(name=search_query, set_name=set_name, language=language)
         return scraper.CardDetails(name=search_query, set_name="", language=language)
+
+    def _check_memory_usage(self):
+        """Monitor memory usage and force collection if needed."""
+        process = psutil.Process()
+        memory_info = process.memory_info()
+        
+        # If using more than 80% of available memory, force collection
+        if memory_info.rss > (psutil.virtual_memory().available * 0.8):
+            gc.collect()
 
     # --- Actions ---
 
@@ -340,55 +355,76 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
         })
 
     async def _scrape_all_sets_async(self, log_id):
-        """Asynchronous implementation of scrape_all_sets."""
+        """Asynchronous implementation of scrape_all_sets with batching."""
         try:
             scrape_log = await sync_to_async(ScrapeLog.objects.get)(id=log_id)
             total_attempted = 0
             total_updated = 0
 
-            async def scrape_and_save_set(set_name, language, rarities):
-                """Inner function to scrape and save a single set."""
-                nonlocal total_attempted, total_updated  # Access outer scope variables
-                try:
-                    card_details = scraper.CardDetails(name="", set_name=set_name, language=language)
-                    results = await scraper.main([card_details])
-                    total_attempted += len(results)
+            # Process sets in smaller batches
+            batch_size = 2  # Process 2 sets at a time
+            
+            async def process_set_batch(sets_batch, language, rarities):
+                nonlocal total_attempted, total_updated
+                
+                for set_name in sets_batch:
+                    try:
+                        async with self._request_semaphore:
+                            card_details = scraper.CardDetails(
+                                name="", 
+                                set_name=set_name, 
+                                language=language
+                            )
+                            results = await scraper.main([card_details])
+                            
+                            # Update progress
+                            await sync_to_async(scrape_log.update_progress)(
+                                f"Processing {language} set: {set_name}"
+                            )
+                            
+                            batch_attempted = len(results)
+                            batch_updated = 0
+                            
+                            for card_data in results:
+                                if card_data.rarity in rarities:
+                                    try:
+                                        card_dict = await self._process_card_data(card_data)
+                                        if await self._save_card_to_db(card_dict):
+                                            batch_updated += 1
+                                    except ValueError:
+                                        continue
+                            
+                            total_attempted += batch_attempted
+                            total_updated += batch_updated
+                            
+                            # Force garbage collection after each set
+                            import gc
+                            gc.collect()
+                            
+                            # Add delay between sets
+                            await asyncio.sleep(5)
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing {set_name}: {e}")
+                        await sync_to_async(scrape_log.log_error)(
+                            f"Error in set {set_name}: {str(e)}"
+                        )
+                        continue
 
-                    for card_data in results:
-                        if card_data.rarity in rarities:
-                            try:
-                                card_dict = await self._process_card_data(card_data)
-                                if await self._save_card_to_db(card_dict):
-                                    total_updated += 1
-                            except ValueError:
-                                continue  # Skip invalid cards
-                    logger.info(f"Processed {language} set: {set_name}")
+            # Process English sets in batches
+            for i in range(0, len(CardSetData.ENGLISH_SETS), batch_size):
+                batch = CardSetData.ENGLISH_SETS[i:i + batch_size]
+                await process_set_batch(batch, "English", CardSetData.ENGLISH_RARITIES)
 
-                except Exception as e:
-                    logger.error(f"Error scraping {language} set {set_name}: {e}", exc_info=True)
-                    # Log specific set failure, but don't fail the entire scrape
-                    await sync_to_async(scrape_log.fail)(f"Error scraping {language} set {set_name}: {e}")
-
-
-            async with self._request_semaphore:  # Control concurrency
-                tasks = []
-                # Create tasks for English sets
-                for set_name in CardSetData.ENGLISH_SETS:
-                    tasks.append(
-                        scrape_and_save_set(set_name, "English", CardSetData.ENGLISH_RARITIES)
-                    )
-                # Create tasks for Japanese sets
-                for set_name in CardSetData.JAPANESE_SETS:
-                    tasks.append(
-                        scrape_and_save_set(set_name, "Japanese", CardSetData.JAPANESE_RARITIES)
-                    )
-
-                await asyncio.gather(*tasks)  # Run tasks concurrently
+            # Process Japanese sets in batches
+            for i in range(0, len(CardSetData.JAPANESE_SETS), batch_size):
+                batch = CardSetData.JAPANESE_SETS[i:i + batch_size]
+                await process_set_batch(batch, "Japanese", CardSetData.JAPANESE_RARITIES)
 
             await sync_to_async(scrape_log.complete)(total_attempted, total_updated)
 
         except Exception as e:
-            logger.error(f"Error in bulk scraping: {str(e)}", exc_info=True)
+            logger.error(f"Fatal error in bulk scraping: {str(e)}", exc_info=True)
             await sync_to_async(scrape_log.fail)(str(e))
 
     # --- Fetch Actions ---
