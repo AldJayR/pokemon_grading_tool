@@ -154,8 +154,6 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                 'product_id': card_data.product_id,
                 'psa_10_price': card_data.psa_10_price or 0.0,
                 'ebay_last_pulled': timezone.now(),
-                'price_delta': card_data.price_delta or 0.0,
-                'profit_potential': card_data.profit_potential or 0.0,
                 'last_updated': timezone.now()
             }
         except (ValueError, AttributeError) as e:

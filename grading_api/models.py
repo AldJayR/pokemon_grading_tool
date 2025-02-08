@@ -74,18 +74,22 @@ class PokemonCard(models.Model):
         return f"{self.card_name} ({self.set_name}) - {self.rarity} - {self.language}"
 
     @property
-    def price_delta(self):
-        """Calculate the difference between PSA 10 and TCGPlayer prices."""
+    def price_delta(self) -> str:
+        """Calculate the difference between PSA 10 and TCGPlayer prices as formatted string."""
         if self.psa_10_price is None or self.tcgplayer_price is None:
-            return None
-        return self.psa_10_price - self.tcgplayer_price
+            return "0.00"
+        delta = float(self.psa_10_price) - float(self.tcgplayer_price)
+        return f"{delta:.2f}"
 
     @property
-    def profit_potential(self):
-        """Calculate the potential profit percentage."""
-        if (delta := self.price_delta) is not None and self.tcgplayer_price:
-            return (delta / self.tcgplayer_price) * 100 if self.tcgplayer_price > 0 else None
-        return None
+    def profit_potential(self) -> str:
+        """Calculate the potential profit percentage as formatted string."""
+        if self.tcgplayer_price is None or float(self.tcgplayer_price) <= 0:
+            return "0.00"
+        if (delta := float(self.psa_10_price or 0) - float(self.tcgplayer_price)) > 0:
+            potential = (delta / float(self.tcgplayer_price)) * 100
+            return f"{potential:.2f}"
+        return "0.00"
 
     def update_tcgplayer_data(self, price, market_price, product_id):
         """Update TCGPlayer data with validation."""

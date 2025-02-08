@@ -33,9 +33,19 @@ class CardPriceData:
     tcgplayer_price: Optional[float] = None
     product_id: Optional[str] = None
     psa_10_price: Optional[float] = None
-    price_delta: Optional[float] = None
-    profit_potential: Optional[float] = None
+    price_delta: Optional[str] = None  # Changed to str
+    profit_potential: Optional[str] = None  # Changed to str
     last_updated: Optional[datetime] = None
+
+    def calculate_metrics(self):
+        """Calculate price_delta and profit_potential as formatted strings"""
+        if self.psa_10_price is not None and self.tcgplayer_price is not None:
+            delta = self.psa_10_price - self.tcgplayer_price
+            self.price_delta = f"{delta:.2f}"
+            
+            if self.tcgplayer_price > 0:
+                potential = (delta / self.tcgplayer_price) * 100
+                self.profit_potential = f"{potential:.2f}"
 
 # Configuration
 @dataclass(frozen=True)
@@ -248,42 +258,58 @@ def build_tcgplayer_url(card_details: CardDetails, rarity: str) -> str:
     return f"{base}/product?{query_string}"
 
 async def fetch_and_process_page(page, card_details: CardDetails, rarity: str) -> List[CardPriceData]:
-    """Fetches and processes a single TCGPlayer page"""
+    """Fetches and processes TCGPlayer pages with pagination support"""
+    all_results = []
+    current_page = 1
+    max_pages = 5  # Limit to prevent infinite loops
+    
     try:
-        logger.info(f"Waiting for search results or blank slate for {card_details.name}")
-        
-        # Wait for either search results or blank slate
-        await page.wait_for_selector(".search-result, .blank-slate", timeout=60000)
-        
-        # Check which selector is present
-        has_results = await page.locator(".search-result").count() > 0
-        has_blank = await page.locator(".blank-slate").count() > 0
-        
-        if has_blank:
-            logger.info(f"No results found for {card_details.name} with rarity {rarity}")
-            return []
+        while current_page <= max_pages:
+            logger.info(f"Processing page {current_page} for {card_details.name}")
             
-        if has_results:
-            logger.info(f"Found search results for {card_details.name} with rarity {rarity}")
-            html = await page.content()
-            logger.info(f"HTML content length: {len(html)}")
+            # Modify URL for pagination
+            if current_page > 1:
+                current_url = page.url
+                if 'page=' in current_url:
+                    new_url = re.sub(r'page=\d+', f'page={current_page}', current_url)
+                else:
+                    new_url = f"{current_url}&page={current_page}"
+                await page.goto(new_url, wait_until="networkidle")
             
-            soup = BeautifulSoup(html, 'lxml')
-            results = process_card_elements(soup, card_details, rarity)
+            # Wait for results or blank slate
+            await page.wait_for_selector(".search-result, .blank-slate", timeout=60000)
             
-            if results:
-                logger.info(f"Successfully processed {len(results)} cards for {card_details.name}")
+            has_results = await page.locator(".search-result").count() > 0
+            has_blank = await page.locator(".blank-slate").count() > 0
+            
+            if has_blank and current_page == 1:
+                logger.info(f"No results found for {card_details.name}")
+                return []
+            
+            if has_results:
+                html = await page.content()
+                soup = BeautifulSoup(html, 'lxml')
+                page_results = process_card_elements(soup, card_details, rarity)
+                if page_results:
+                    all_results.extend(page_results)
+                
+                # Check for next page button
+                next_button = await page.query_selector('button[aria-label="Next Page"]')
+                if not next_button or await next_button.is_disabled():
+                    logger.info(f"No more pages available after page {current_page}")
+                    break
+                
+                current_page += 1
+                await asyncio.sleep(1)  # Small delay between pages
             else:
-                logger.warning(f"No valid cards found after processing for {card_details.name}")
+                break
             
-            return results
+        logger.info(f"Total cards found across {current_page} pages: {len(all_results)}")
+        return all_results
         
-        logger.warning(f"Neither search results nor blank slate found for {card_details.name}")
-        return []
-
     except Exception as e:
-        logger.error(f"Error processing page for {card_details.name}: {str(e)}")
-        return []
+        logger.error(f"Error processing pages for {card_details.name}: {str(e)}")
+        return all_results
 
 def process_card_elements(soup: BeautifulSoup, card_details: CardDetails, rarity: str) -> List[CardPriceData]:
     cards = []
@@ -490,7 +516,6 @@ async def process_card_batch(
     browser_context,
     session: aiohttp.ClientSession
 ) -> List[CardPriceData]:
-    """Processes a batch of cards concurrently"""
     try:
         tcg_tasks = [
             fetch_tcgplayer_data(card_details, browser_context)
@@ -500,13 +525,6 @@ async def process_card_batch(
         
         all_price_data = []
         for card_details, tcg_result in zip(card_details_list, tcg_results):
-            if isinstance(tcg_result, Exception):
-                logger.error(f"Error processing {card_details.name}: {str(tcg_result)}")
-                continue
-                
-            if not tcg_result:
-                continue
-
             for card_data in tcg_result:
                 try:
                     ebay_price = await get_ebay_psa10_price_async(session, 
@@ -520,8 +538,7 @@ async def process_card_batch(
                     
                     if ebay_price:
                         card_data.psa_10_price = ebay_price
-                        card_data.price_delta = ebay_price - card_data.tcgplayer_price
-                        card_data.profit_potential = (card_data.price_delta / card_data.tcgplayer_price) * 100
+                        card_data.calculate_metrics()  # Use new method to calculate formatted strings
                     all_price_data.append(card_data)
                 except Exception as e:
                     logger.error(f"Error processing eBay data for {card_data.card_name}: {str(e)}")
