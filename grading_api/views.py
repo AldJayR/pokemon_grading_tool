@@ -29,7 +29,6 @@ T = TypeVar('T')  # Type variable for generic functions
 @dataclass
 class CardSetData:
     """Structured card set data with validation methods."""
-    # Make these class variables instead of instance variables
     ENGLISH_SETS = [
         "SV08: Surging Sparks",
         "SV07: Stellar Crown",
@@ -385,8 +384,11 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                             results = await scraper.main([card_details])
                             
                             # Update progress
+                            # Update progress with counts and status message
+                            logger.info(f"Processing {language} set: {set_name}")
                             await sync_to_async(scrape_log.update_progress)(
-                                f"Processing {language} set: {set_name}"
+                                success_count=batch_attempted,
+                                failure_count=batch_attempted - batch_updated
                             )
                             
                             batch_attempted = len(results)
