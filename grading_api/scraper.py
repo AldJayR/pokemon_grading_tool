@@ -9,11 +9,6 @@ import functools
 import logging
 import time
 from typing import List, Dict, Optional, Any
-
-class BrowserInitError(Exception):
-    """Custom exception for browser initialization errors"""
-    pass
-
 from html import escape
 import urllib.parse
 from dataclasses import dataclass
@@ -45,49 +40,24 @@ class CardPriceData:
 # Configuration
 @dataclass(frozen=True)
 class Config:
-    # Rate limiting settings
     ONE_MINUTE: int = 60
     MAX_REQUESTS_TCG: int = 30
     MAX_REQUESTS_EBAY: int = 20
-    
-    # Cache settings
     CACHE_HOURS: int = 24
-    CACHE_FILE: str = "price_cache.json"
-    CACHE_SAVE_INTERVAL: int = 300  # 5 minutes
-    
-    # Retry settings
     MAX_RETRIES: int = 3
     RETRY_DELAYS: tuple = (5, 10, 20)
-    
-    # Timeout settings
     TIMEOUT: int = 60
     TIMEOUT_SECONDS: int = 60
-    PAGE_TIMEOUT: int = 30000  # 30 seconds for page operations
-    NETWORK_TIMEOUT: int = 30000  # 30 seconds for network requests
-    
-    # Concurrency settings
     CONCURRENCY: int = 5
-    MAX_PARALLEL_REQUESTS: int = 10
-    
-    # Price validation
-    MIN_PRICE: float = 0.01
-    MAX_PRICE: float = 100000.0
     
     def __post_init__(self):
-        """Validate configuration values"""
-        validations = {
-            'MAX_REQUESTS_TCG': self.MAX_REQUESTS_TCG > 0,
-            'MAX_REQUESTS_EBAY': self.MAX_REQUESTS_EBAY > 0,
-            'CACHE_HOURS': self.CACHE_HOURS > 0,
-            'TIMEOUT': self.TIMEOUT > 0,
-            'CONCURRENCY': self.CONCURRENCY > 0,
-            'MIN_PRICE': self.MIN_PRICE >= 0,
-            'MAX_PRICE': self.MAX_PRICE > self.MIN_PRICE
-        }
-        
-        failed = [key for key, valid in validations.items() if not valid]
-        if failed:
-            raise ValueError(f"Invalid configuration values for: {', '.join(failed)}")
+        assert all([
+            self.MAX_REQUESTS_TCG > 0,
+            self.MAX_REQUESTS_EBAY > 0,
+            self.CACHE_HOURS > 0,
+            self.TIMEOUT > 0,
+            self.CONCURRENCY > 0
+        ]), "Invalid configuration values"
 
     WEBSITE_SELECTORS = {
         "TCGPlayer": {
@@ -138,13 +108,11 @@ class AsyncRateLimiter:
         pass
 
 class PriceCache:
-    def __init__(self, filename: str = Config.CACHE_FILE, save_interval: int = Config.CACHE_SAVE_INTERVAL):
+    def __init__(self, save_interval: int = 300):  # 5 minutes
         self.cache = {}
-        self.filename = filename
+        self.filename = "price_cache.json"
         self.save_interval = save_interval
         self._lock = asyncio.Lock()
-        self._last_save = time.time()
-        self._dirty = False
 
     async def async_load_cache(self):
         try:
@@ -170,13 +138,6 @@ class PriceCache:
             async with aiofiles.open(self.filename, 'w') as f:
                 await f.write(json.dumps(cache_data))
 
-    async def maybe_save_cache(self):
-        """Save cache if dirty and enough time has passed"""
-        if self._dirty and time.time() - self._last_save >= self.save_interval:
-            await self.save_cache()
-            self._dirty = False
-            self._last_save = time.time()
-
     async def get(self, key: str) -> Optional[Any]:
         if key in self.cache:
             data, timestamp = self.cache[key]
@@ -188,7 +149,6 @@ class PriceCache:
     async def set(self, key: str, value: Any):
         async with self._lock:
             self.cache[key] = (value, datetime.now())
-            self._dirty = True
 
 # 4. Add these utility functions for security:
 
@@ -223,37 +183,6 @@ def cache_results(func):
 
 class RequestError(Exception):
     pass
-
-class AsyncBrowserContext:
-    def __init__(self, headless: bool = True):
-        self.headless = headless
-        self.browser = None
-        self.context = None
-
-    async def __aenter__(self):
-        try:
-            async with async_playwright() as p:
-                self.browser = await p.chromium.launch(
-                    headless=self.headless,
-                    args=['--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage']
-                )
-                self.context = await self.browser.new_context(
-                    viewport={'width': 1920, 'height': 1080},
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                )
-                return self.context
-        except Exception as e:
-            await self.cleanup()
-            raise BrowserInitError(f"Failed to initialize browser: {str(e)}")
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.cleanup()
-
-    async def cleanup(self):
-        if self.context:
-            await self.context.close()
-        if self.browser:
-            await self.browser.close()
 
 async def fetch_tcgplayer_data(card_details: CardDetails, context) -> List[CardPriceData]:
     """
@@ -324,7 +253,7 @@ async def fetch_and_process_page(page, card_details: CardDetails, rarity: str) -
         logger.info(f"Waiting for search results or blank slate for {card_details.name}")
         
         # Wait for either search results or blank slate
-        await page.wait_for_selector(".search-result, .blank-slate", timeout=30000)
+        await page.wait_for_selector(".search-result, .blank-slate", timeout=60000)
         
         # Check which selector is present
         has_results = await page.locator(".search-result").count() > 0
@@ -602,35 +531,25 @@ async def process_card_batch(
     finally:
         pass
 
-async def process_card_batch_chunked(
-    card_details_list: List[CardDetails],
-    browser_context,
-    session: aiohttp.ClientSession,
-    chunk_size: int = 5
-) -> List[CardPriceData]:
-    """Process cards in chunks to prevent memory issues"""
-    all_results = []
-    for i in range(0, len(card_details_list), chunk_size):
-        chunk = card_details_list[i:i + chunk_size]
-        results = await process_card_batch(chunk, browser_context, session)
-        all_results.extend(results)
-        await asyncio.sleep(1)  # Prevent rate limiting
-    return all_results
-
 async def main(card_details_list: List[CardDetails]) -> List[CardPriceData]:
     await price_cache.async_load_cache()  # Initialize cache asynchronously
     
     try:
-        async with AsyncBrowserContext() as context:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context()
+    
+            
             try:
                 async with aiohttp.ClientSession(
                     connector=aiohttp.TCPConnector(limit=Config.CONCURRENCY),
                     timeout=ClientTimeout(total=Config.TIMEOUT)
                 ) as session:
-                    results = await process_card_batch_chunked(card_details_list, context, session)
+                    results = await process_card_batch(card_details_list, context, session)
                     return results
             finally:
                 await context.close()
+                await browser.close()
                 
     except Exception as e:
         safe_log(f"Critical error in main: {str(e)}")
