@@ -111,25 +111,39 @@ CACHES = {
         'LOCATION': os.environ.get('REDIS_URL', 'redis://localhost:6379/0'),
         'OPTIONS': {
             'db': '0',
-            'parser_class': 'redis.connection.PythonParser',
-            'pool_class': 'redis.connection.BlockingConnectionPool',
+            'client_class': 'django_redis.client.DefaultClient',
+            'retry_on_timeout': True,
+            'max_connections': 10,
+            'socket_connect_timeout': 5,
+            'socket_timeout': 5,
+            # Add connection pool settings
+            'connection_pool_class_kwargs': {
+                'max_connections': 50
+            },
+            # Add retry settings
+            'retry_on_error': [Exception],
         }
     }
 }
+
+# Add Redis-specific settings
+REDIS_TIMEOUT = 3600
+REDIS_CONNECT_RETRY = True
+REDIS_CONNECTION_POOL_CLASS = 'redis.BlockingConnectionPool'
 
 POKEMON_CARD_SETTINGS = {
     # Cache timeout in seconds (1 hour default)
     'POKEMON_CARD_CACHE_TIMEOUT': 3600,
     
     # Request limits
-    'POKEMON_CARD_MAX_CONCURRENT_REQUESTS': 2,
+    'POKEMON_CARD_MAX_CONCURRENT_REQUESTS': 1,  # Reduce from 2
     
     # Batch processing
-    'POKEMON_CARD_BATCH_SIZE': 2,
+    'POKEMON_CARD_BATCH_SIZE': 1,  # Reduce from 2
     
     # Delays (in seconds)
-    'POKEMON_CARD_INTER_SET_DELAY': 5,
-    'POKEMON_CARD_INTER_BATCH_DELAY': 10,
+    'POKEMON_CARD_INTER_SET_DELAY': 10,  # Increase from 5
+    'POKEMON_CARD_INTER_BATCH_DELAY': 15,  # Increase from 10
     
     # Retries
     'POKEMON_CARD_MAX_RETRIES': 3,
@@ -141,6 +155,13 @@ POKEMON_CARD_SETTINGS = {
     'POKEMON_CARD_PAGE_SIZE': 100,
     'POKEMON_CARD_MAX_PAGE_SIZE': 1000,
 }
+
+# Add these to POKEMON_CARD_SETTINGS
+POKEMON_CARD_SETTINGS.update({
+    'POKEMON_CARD_ERROR_RETRY_DELAY': 30,  # seconds
+    'POKEMON_CARD_MAX_ERRORS_BEFORE_ABORT': 5,
+    'POKEMON_CARD_ERROR_COOLDOWN': 300,  # 5 minutes
+})
 
 locals().update(POKEMON_CARD_SETTINGS)
 
@@ -213,11 +234,10 @@ if not DEBUG:
     SECURE_HSTS_PRELOAD = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
     SECURE_BROWSER_XSS_FILTER = True
-
-# Security Settings
-SECURE_SSL_REDIRECT = False
-SESSION_COOKIE_SECURE = False
-CSRF_COOKIE_SECURE = False
+else:
+    SECURE_SSL_REDIRECT = False
+    SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SECURE = False
 
 # Content Security Policy
 SECURE_HSTS_SECONDS = 31536000  # 1 year
