@@ -9,12 +9,14 @@ from django_filters import rest_framework as filters
 import logging
 from functools import wraps
 from asgiref.sync import sync_to_async, async_to_sync
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TypeVar
 import asyncio
 from datetime import timedelta
 from rest_framework.pagination import PageNumberPagination
 import gc
 import psutil
+from dataclasses import dataclass
+from django.conf import settings
 
 from .models import PokemonCard, ScrapeLog
 from .serializers import PokemonCardSerializer
@@ -22,8 +24,12 @@ from . import scraper
 
 logger = logging.getLogger(__name__)
 
-class CardSetData:  # Keep this for the scrape_all_sets functionality
-    ENGLISH_SETS = [
+T = TypeVar('T')  # Type variable for generic functions
+
+@dataclass
+class CardSetData:
+    """Structured card set data with validation methods."""
+    ENGLISH_SETS: List[str] = [
         "SV08: Surging Sparks",
         "SV07: Stellar Crown",
         "SV06: Twilight Masquerade",
@@ -35,7 +41,7 @@ class CardSetData:  # Keep this for the scrape_all_sets functionality
         "SV: Paldean Fates",
     ]
 
-    JAPANESE_SETS = [
+    JAPANESE_SETS: List[str] = [
         "SV7A: Paradise Dragona",
         "SV7: Stellar Miracle",
         "SV6A: Night Wanderer",
@@ -49,22 +55,31 @@ class CardSetData:  # Keep this for the scrape_all_sets functionality
         "SV8: Super Electric Breaker"
     ]
 
-    ENGLISH_RARITIES = [
+    ENGLISH_RARITIES: List[str] = [
         "Special Illustration Rare",
         "Illustration Rare",
         "Hyper Rare"
     ]
 
-    JAPANESE_RARITIES = [
+    JAPANESE_RARITIES: List[str] = [
         "Art Rare",
         "Super Rare",
         "Special Art Rare",
         "Ultra Rare"
     ]
 
-    ALL_SETS = ENGLISH_SETS + JAPANESE_SETS  # Combine for validation
+    @classmethod
+    def get_all_sets(cls) -> List[str]:
+        """Get combined list of all sets."""
+        return cls.ENGLISH_SETS + cls.JAPANESE_SETS
+
+    @classmethod
+    def validate_set(cls, set_name: str) -> bool:
+        """Validate if a set name is valid."""
+        return set_name in cls.get_all_sets()
 
 class PokemonCardFilter(filters.FilterSet):
+    """FilterSet for PokemonCard with enhanced filtering capabilities."""
     card_name = filters.CharFilter(field_name='card_name', lookup_expr='icontains')
     set_name = filters.CharFilter(field_name='set_name', lookup_expr='icontains')
     language = filters.ChoiceFilter(
@@ -74,38 +89,61 @@ class PokemonCardFilter(filters.FilterSet):
     rarity = filters.CharFilter(field_name='rarity', lookup_expr='icontains')
     price_range = filters.RangeFilter(field_name='tcgplayer_price')
     profit_range = filters.RangeFilter(field_name='profit_potential')
+    last_updated = filters.DateTimeFromToRangeFilter()
 
     class Meta:
         model = PokemonCard
         fields = ['card_name', 'set_name', 'language', 'rarity']
 
 class StandardResultsSetPagination(PageNumberPagination):
-    """Standard pagination class for the viewset."""
-    page_size = 100  # Default page size
+    """Configurable pagination for the viewset."""
+    page_size = getattr(settings, 'POKEMON_CARD_PAGE_SIZE', 100)
     page_size_query_param = 'page_size'
-    max_page_size = 1000
+    max_page_size = getattr(settings, 'POKEMON_CARD_MAX_PAGE_SIZE', 1000)
 
 class PokemonCardViewSet(viewsets.ModelViewSet):
-    CACHE_TIMEOUT = 3600
-    MAX_CONCURRENT_REQUESTS = 2  # Reduced from 3
-    BATCH_SIZE = 2
-    INTER_SET_DELAY = 5  # seconds between sets
-    INTER_BATCH_DELAY = 10  # seconds between batches
-    MAX_RETRIES_PER_SET = 3
-    pagination_class = StandardResultsSetPagination  # Add pagination
+    """ViewSet for managing Pokemon card data with async scraping capabilities."""
+    
+    # Configuration constants
+    CACHE_TIMEOUT = getattr(settings, 'POKEMON_CARD_CACHE_TIMEOUT', 3600)
+    MAX_CONCURRENT_REQUESTS = getattr(settings, 'POKEMON_CARD_MAX_CONCURRENT_REQUESTS', 2)
+    BATCH_SIZE = getattr(settings, 'POKEMON_CARD_BATCH_SIZE', 2)
+    INTER_SET_DELAY = getattr(settings, 'POKEMON_CARD_INTER_SET_DELAY', 5)
+    INTER_BATCH_DELAY = getattr(settings, 'POKEMON_CARD_INTER_BATCH_DELAY', 10)
+    MAX_RETRIES_PER_SET = getattr(settings, 'POKEMON_CARD_MAX_RETRIES', 3)
+    MEMORY_THRESHOLD = getattr(settings, 'POKEMON_CARD_MEMORY_THRESHOLD', 0.8)
 
     queryset = PokemonCard.objects.all()
     serializer_class = PokemonCardSerializer
     filter_backends = [filters.DjangoFilterBackend]
     filterset_class = PokemonCardFilter
+    pagination_class = StandardResultsSetPagination
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._request_semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_REQUESTS)
+        self._cache = cache
+        self._memory_monitor = self._init_memory_monitor()
+
+    def _init_memory_monitor(self) -> psutil.Process:
+        """Initialize memory monitoring."""
+        return psutil.Process()
+
+    async def _check_memory_usage(self) -> None:
+        """Monitor memory usage and collect garbage if needed."""
+        memory_info = self._memory_monitor.memory_info()
+        if memory_info.rss > (psutil.virtual_memory().available * self.MEMORY_THRESHOLD):
+            gc.collect()
+            await asyncio.sleep(0.1)  # Allow other tasks to run
 
     async def _process_card_data(self, card_data: scraper.CardPriceData) -> dict:
-        """Process card data, handling None values explicitly."""
+        """Process card data with error handling and validation."""
         try:
+            await self._check_memory_usage()
+            
+            if not all([card_data.card_name, card_data.set_name, card_data.language]):
+                raise ValueError("Missing required card data fields")
+
             return {
                 'card_name': card_data.card_name,
                 'set_name': card_data.set_name,
@@ -121,12 +159,12 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                 'last_updated': timezone.now()
             }
         except (ValueError, AttributeError) as e:
-            logger.error(f"Data processing error: {str(e)}")
+            logger.error(f"Data processing error: {str(e)}", exc_info=True)
             raise ValueError(f"Invalid card data: {str(e)}")
 
     @sync_to_async
     def _save_card_to_db(self, card_dict: dict) -> Optional[PokemonCard]:
-        """Save or update card data."""
+        """Save or update card data with transaction management."""
         try:
             with transaction.atomic():
                 card, created = PokemonCard.objects.update_or_create(
@@ -134,14 +172,8 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                     set_name=card_dict['set_name'],
                     language=card_dict['language'],
                     rarity=card_dict['rarity'],
-                    defaults={
-                        'tcgplayer_price': card_dict['tcgplayer_price'],
-                        'tcgplayer_last_pulled': card_dict['tcgplayer_last_pulled'],
-                        'product_id': card_dict.get('product_id'),
-                        'psa_10_price': card_dict['psa_10_price'],
-                        'ebay_last_pulled': card_dict['ebay_last_pulled'],
-                        'last_updated': card_dict['last_updated'],
-                    }
+                    defaults={k: v for k, v in card_dict.items() 
+                            if k not in ['card_name', 'set_name', 'language', 'rarity']}
                 )
                 return card
         except Exception as e:
@@ -149,42 +181,38 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
             return None
 
     def _create_card_details(self, search_query: str, set_name: str, language: str) -> scraper.CardDetails:
-        """Create CardDetails, validating set_name if provided."""
-        is_set_search = "SV" in search_query or ":" in search_query
+        """Create and validate CardDetails object."""
+        is_set_search = any(term in search_query for term in ["SV", ":"])
 
-        # Validate set_name against predefined sets
-        if set_name and set_name not in CardSetData.ALL_SETS:
+        if set_name and not CardSetData.validate_set(set_name):
             raise ValueError(f"Invalid set_name: {set_name}")
 
-        if is_set_search:
-            return scraper.CardDetails(name="", set_name=search_query, language=language)
-        elif set_name:
-            return scraper.CardDetails(name=search_query, set_name=set_name, language=language)
-        return scraper.CardDetails(name=search_query, set_name="", language=language)
+        return scraper.CardDetails(
+            name="" if is_set_search else search_query,
+            set_name=search_query if is_set_search else set_name,
+            language=language
+        )
 
-    def _check_memory_usage(self):
-        """Monitor memory usage and force collection if needed."""
-        process = psutil.Process()
-        memory_info = process.memory_info()
-        
-        # If using more than 80% of available memory, force collection
-        if memory_info.rss > (psutil.virtual_memory().available * 0.8):
-            gc.collect()
-
-    # --- Actions ---
+    async def _handle_scrape_error(self, error: Exception, scrape_log: ScrapeLog) -> Response:
+        """Centralized error handling for scraping operations."""
+        logger.error(f"Scraper error: {str(error)}", exc_info=True)
+        await sync_to_async(scrape_log.fail)(f"Scraper error: {str(error)}")
+        return Response(
+            {'error': f'Scraper error: {str(error)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
     @action(detail=False, methods=['get'])
     def scrape_and_save(self, request):
-        """Scrape card data and save to database."""
+        """Endpoint to scrape and save card data."""
         return async_to_sync(self._scrape_and_save_async)(request)
 
     async def _scrape_and_save_async(self, request):
-        """Asynchronous implementation of scrape_and_save."""
+        """Asynchronous implementation of scrape_and_save with improved error handling."""
         search_query = request.query_params.get('searchQuery', '').strip()
         set_name = request.query_params.get('set_name', '').strip()
         language = request.query_params.get('language', 'English')
-        # Use request.user if authenticated, otherwise default to 'anonymous'
-        user = request.user if request.user.is_authenticated else 'anonymous'
+        user = str(request.user if request.user.is_authenticated else 'anonymous')
 
         if not search_query:
             return Response(
@@ -192,13 +220,12 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # More robust cache key
         cache_key = f"scrape:{search_query}:{set_name}:{language}"
-        cached_result = cache.get(cache_key)
+        cached_result = self._cache.get(cache_key)
         if cached_result:
             return Response(cached_result)
 
-        scrape_log = await sync_to_async(ScrapeLog.objects.create)(user=str(user)) # Use str(user)
+        scrape_log = await sync_to_async(ScrapeLog.objects.create)(user=user)
 
         try:
             async with self._request_semaphore:
@@ -207,13 +234,8 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
 
                 try:
                     profit_data = await scraper.main([card_details])
-                except Exception as e:  # Catch scraper-specific exceptions
-                    logger.error(f"Scraper error: {str(e)}", exc_info=True)
-                    await sync_to_async(scrape_log.fail)(f"Scraper error: {str(e)}")
-                    return Response(
-                        {'error': f'Scraper error: {str(e)}'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
+                except Exception as e:
+                    return await self._handle_scrape_error(e, scrape_log)
 
                 if not profit_data:
                     await sync_to_async(scrape_log.fail)("No data found")
@@ -240,29 +262,25 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                     )
 
                 await sync_to_async(scrape_log.complete)(len(profit_data), len(saved_cards))
-                serializer = self.serializer_class(saved_cards, many=True)
+                
                 response_data = {
                     'message': f'Successfully processed {len(saved_cards)} cards',
-                    'cards': serializer.data,
+                    'cards': self.serializer_class(saved_cards, many=True).data,
                     'log_id': scrape_log.id
                 }
-                cache.set(cache_key, response_data, self.CACHE_TIMEOUT)
+                
+                self._cache.set(cache_key, response_data, self.CACHE_TIMEOUT)
                 return Response(response_data)
 
-        except ValueError as e:  # Catch validation errors from _create_card_details
+        except ValueError as e:
             logger.error(f"Input validation error: {str(e)}", exc_info=True)
             await sync_to_async(scrape_log.fail)(f"Input validation error: {str(e)}")
             return Response(
                 {'error': str(e)},
-                status=status.HTTP_400_BAD_REQUEST  # 400 for client errors
+                status=status.HTTP_400_BAD_REQUEST
             )
         except Exception as e:
-            logger.error(f"Request error: {str(e)}", exc_info=True)
-            await sync_to_async(scrape_log.fail)(str(e))
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return await self._handle_scrape_error(e, scrape_log)
 
     @action(detail=True, methods=['get'])
     def refresh(self, request, pk=None):
@@ -270,8 +288,8 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
         return async_to_sync(self._refresh_async)(request, pk)
 
     async def _refresh_async(self, request, pk):
-        """Asynchronous implementation of refresh."""
-        user = request.user if request.user.is_authenticated else 'anonymous'
+        """Asynchronous implementation of refresh with improved error handling."""
+        user = str(request.user if request.user.is_authenticated else 'anonymous')
         try:
             card = await sync_to_async(PokemonCard.objects.select_for_update().get)(pk=pk)
 
@@ -281,7 +299,7 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            scrape_log = await sync_to_async(ScrapeLog.objects.create)(user=str(user))
+            scrape_log = await sync_to_async(ScrapeLog.objects.create)(user=user)
 
             async with self._request_semaphore:
                 card_details = scraper.CardDetails(
@@ -293,13 +311,8 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
 
                 try:
                     updated_data = await scraper.main([card_details])
-                except Exception as e:  # Catch scraper-specific exceptions
-                    logger.error(f"Scraper error during refresh: {str(e)}", exc_info=True)
-                    await sync_to_async(scrape_log.fail)(f"Scraper error: {str(e)}")
-                    return Response(
-                        {'error': f'Scraper error: {str(e)}'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
+                except Exception as e:
+                    return await self._handle_scrape_error(e, scrape_log)
 
                 if not updated_data:
                     await sync_to_async(scrape_log.fail)("No updated data found")
@@ -312,14 +325,12 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                     card_dict = await self._process_card_data(updated_data[0])
                     updated_card = await self._save_card_to_db(card_dict)
 
-                    # Invalidate cache (more targeted invalidation)
-                    cache_key_prefix = f"scrape:{card.card_name}:{card.set_name}:{card.language}"
-                    cache.delete_pattern(f"{cache_key_prefix}*")
-
+                    # Invalidate related caches
+                    cache_key = f"scrape:{card.card_name}:{card.set_name}:{card.language}"
+                    self._cache.delete(cache_key)
 
                     await sync_to_async(scrape_log.complete)(1, 1)
-                    serializer = self.serializer_class(updated_card)
-                    return Response(serializer.data)
+                    return Response(self.serializer_class(updated_card).data)
 
                 except ValueError as e:
                     await sync_to_async(scrape_log.fail)(str(e))
@@ -334,47 +345,42 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
         except Exception as e:
-            logger.error(f"Refresh error: {str(e)}", exc_info=True)
-            await sync_to_async(scrape_log.fail)(str(e))
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            return await self._handle_scrape_error(e, scrape_log)
 
     @action(detail=False, methods=['post'])
     def scrape_all_sets(self, request):
         """Scrape all sets concurrently and save to database."""
-        user = request.user if request.user.is_authenticated else 'anonymous'
-        scrape_log = ScrapeLog.objects.create(user=str(user))  # Create log entry
-
-        async_to_sync(self._scrape_all_sets_async)(scrape_log.id)  # Start async task
+        user = str(request.user if request.user.is_authenticated else 'anonymous')
+        scrape_log = ScrapeLog.objects.create(user=user)
+        async_to_sync(self._scrape_all_sets_async)(scrape_log.id)
 
         return Response({
-            'message': 'Scrape started',
+            'message': 'Bulk scrape started',
             'log_id': scrape_log.id
         })
 
-    async def _scrape_all_sets_async(self, log_id):
-        """Asynchronous implementation of scrape_all_sets with batching."""
+    async def _scrape_all_sets_async(self, log_id: int):
+        """Asynchronous implementation of scrape_all_sets with improved batching and error handling."""
         try:
             scrape_log = await sync_to_async(ScrapeLog.objects.get)(id=log_id)
             total_attempted = 0
             total_updated = 0
 
-            # Process sets in smaller batches
-            batch_size = 2  # Process 2 sets at a time
-            
-            async def process_set_batch(sets_batch, language, rarities):
+            async def process_set_batch(sets_batch: List[str], language: str, rarities: List[str]):
+                """Process a batch of sets with error handling and progress tracking."""
                 nonlocal total_attempted, total_updated
-                
+
                 for set_name in sets_batch:
                     try:
                         async with self._request_semaphore:
+                            await self._check_memory_usage()
+                            
                             card_details = scraper.CardDetails(
-                                name="", 
-                                set_name=set_name, 
+                                name="",
+                                set_name=set_name,
                                 language=language
                             )
+
                             results = await scraper.main([card_details])
                             
                             # Update progress
@@ -391,35 +397,35 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                                         card_dict = await self._process_card_data(card_data)
                                         if await self._save_card_to_db(card_dict):
                                             batch_updated += 1
-                                    except ValueError:
+                                    except ValueError as e:
+                                        logger.warning(f"Invalid card in {set_name}: {str(e)}")
                                         continue
                             
                             total_attempted += batch_attempted
                             total_updated += batch_updated
                             
-                            # Force garbage collection after each set
-                            import gc
-                            gc.collect()
+                            # Clear cache for this set
+                            cache_key = f"scrape::{set_name}:{language}"
+                            self._cache.delete(cache_key)
                             
-                            # Add delay between sets
-                            await asyncio.sleep(5)
+                            await asyncio.sleep(self.INTER_SET_DELAY)
                             
                     except Exception as e:
-                        logger.error(f"Error processing {set_name}: {e}")
+                        logger.error(f"Error processing {set_name}: {str(e)}", exc_info=True)
                         await sync_to_async(scrape_log.log_error)(
                             f"Error in set {set_name}: {str(e)}"
                         )
                         continue
 
-            # Process English sets in batches
-            for i in range(0, len(CardSetData.ENGLISH_SETS), batch_size):
-                batch = CardSetData.ENGLISH_SETS[i:i + batch_size]
-                await process_set_batch(batch, "English", CardSetData.ENGLISH_RARITIES)
-
-            # Process Japanese sets in batches
-            for i in range(0, len(CardSetData.JAPANESE_SETS), batch_size):
-                batch = CardSetData.JAPANESE_SETS[i:i + batch_size]
-                await process_set_batch(batch, "Japanese", CardSetData.JAPANESE_RARITIES)
+            # Process sets in batches
+            for sets, language, rarities in [
+                (CardSetData.ENGLISH_SETS, "English", CardSetData.ENGLISH_RARITIES),
+                (CardSetData.JAPANESE_SETS, "Japanese", CardSetData.JAPANESE_RARITIES)
+            ]:
+                for i in range(0, len(sets), self.BATCH_SIZE):
+                    batch = sets[i:i + self.BATCH_SIZE]
+                    await process_set_batch(batch, language, rarities)
+                    await asyncio.sleep(self.INTER_BATCH_DELAY)
 
             await sync_to_async(scrape_log.complete)(total_attempted, total_updated)
 
@@ -427,70 +433,11 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
             logger.error(f"Fatal error in bulk scraping: {str(e)}", exc_info=True)
             await sync_to_async(scrape_log.fail)(str(e))
 
-    # --- Fetch Actions ---
-    # Keep these, but use the filterset and pagination
-
-    @action(detail=False, methods=['get'], url_path='fetch_card')
-    def fetch_card(self, request):
-        """Fetch specific card by name."""
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-
-    @action(detail=False, methods=['get'], url_path='fetch_card_set')
-    def fetch_card_set(self, request):
-        """Fetch specific card by name and set."""
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-
-    @action(detail=False, methods=['get'], url_path='fetch_card_rarity')
-    def fetch_card_rarity(self, request):
-        """Fetch specific card by name and rarity."""
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-
-    @action(detail=False, methods=['get'], url_path='fetch_set')
-    def fetch_set(self, request):
-        """Fetch cards by set."""
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-
-    @action(detail=False, methods=['get'], url_path='fetch_set_rarity')
-    def fetch_set_rarity(self, request):
-        """Fetch cards by set and rarity."""
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
-
     def list(self, request, *args, **kwargs):
         """Get cards from database with pagination and freshness check."""
         queryset = self.filter_queryset(self.get_queryset())
 
-        # Check freshness (optional)
+        # Check data freshness
         fresh_data_cutoff = timezone.now() - timedelta(hours=24)
         is_fresh = queryset.filter(last_updated__gte=fresh_data_cutoff).exists()
 
@@ -498,7 +445,7 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             response = self.get_paginated_response(serializer.data)
-            response.data['is_fresh'] = is_fresh  # Add to paginated response
+            response.data['is_fresh'] = is_fresh
             return response
 
         serializer = self.get_serializer(queryset, many=True)
@@ -507,3 +454,28 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
             'cards': serializer.data,
             'is_fresh': is_fresh
         })
+
+    @action(detail=False, methods=['get'])
+    def fetch_card(self, request):
+        """Fetch specific card by name with filtering and pagination."""
+        return self.list(request)
+
+    @action(detail=False, methods=['get'])
+    def fetch_card_set(self, request):
+        """Fetch specific card by name and set with filtering and pagination."""
+        return self.list(request)
+
+    @action(detail=False, methods=['get'])
+    def fetch_card_rarity(self, request):
+        """Fetch specific card by name and rarity with filtering and pagination."""
+        return self.list(request)
+
+    @action(detail=False, methods=['get'])
+    def fetch_set(self, request):
+        """Fetch cards by set with filtering and pagination."""
+        return self.list(request)
+
+    @action(detail=False, methods=['get'])
+    def fetch_set_rarity(self, request):
+        """Fetch cards by set and rarity with filtering and pagination."""
+        return self.list(request)

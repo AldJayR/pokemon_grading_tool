@@ -23,8 +23,7 @@ load_dotenv()
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'your-default-secret-key-for-dev')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-# DEBUG = os.getenv('DEBUG', 'False').lower() in ['true', '1']
-DEBUG = False
+DEBUG = os.getenv('DEBUG', 'False').lower() in ['true', '1']
 
 # Allowed Hosts
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,[::1]').split(',')
@@ -58,7 +57,8 @@ MIDDLEWARE = [
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware'
+    'django.middleware.gzip.GZipMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -101,11 +101,41 @@ CACHES = {
     }
 }
 
+POKEMON_CARD_SETTINGS = {
+    # Cache timeout in seconds (1 hour default)
+    'POKEMON_CARD_CACHE_TIMEOUT': 3600,
+    
+    # Request limits
+    'POKEMON_CARD_MAX_CONCURRENT_REQUESTS': 2,
+    
+    # Batch processing
+    'POKEMON_CARD_BATCH_SIZE': 2,
+    
+    # Delays (in seconds)
+    'POKEMON_CARD_INTER_SET_DELAY': 5,
+    'POKEMON_CARD_INTER_BATCH_DELAY': 10,
+    
+    # Retries
+    'POKEMON_CARD_MAX_RETRIES': 3,
+    
+    # Memory management
+    'POKEMON_CARD_MEMORY_THRESHOLD': 0.8,  # 80% threshold for garbage collection
+    
+    # Pagination
+    'POKEMON_CARD_PAGE_SIZE': 100,
+    'POKEMON_CARD_MAX_PAGE_SIZE': 1000,
+}
+
+locals().update(POKEMON_CARD_SETTINGS)
+
+
 # Django REST Framework
 REST_FRAMEWORK = {
-    'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend'],
+    'DEFAULT_FILTER_BACKENDS': [
+        'django_filters.rest_framework.DjangoFilterBackend',
+    ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 100,
+    'PAGE_SIZE': POKEMON_CARD_SETTINGS['POKEMON_CARD_PAGE_SIZE'],
 }
 
 # Logging
@@ -127,6 +157,9 @@ LOGGING = {
 DATABASES = {
     'default': dj_database_url.config(default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}")
 }
+
+CACHE_MIDDLEWARE_SECONDS = 3600
+CACHE_MIDDLEWARE_KEY_PREFIX = 'pokemon_cards'
 
 # Password Validation
 AUTH_PASSWORD_VALIDATORS = [
