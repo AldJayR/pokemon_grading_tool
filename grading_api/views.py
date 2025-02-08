@@ -15,7 +15,7 @@ from datetime import timedelta
 from rest_framework.pagination import PageNumberPagination
 import gc
 import psutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from django.conf import settings
 
 from .models import PokemonCard, ScrapeLog
@@ -29,7 +29,7 @@ T = TypeVar('T')  # Type variable for generic functions
 @dataclass
 class CardSetData:
     """Structured card set data with validation methods."""
-    ENGLISH_SETS: List[str] = [
+    ENGLISH_SETS: List[str] = field(default_factory=lambda: [
         "SV08: Surging Sparks",
         "SV07: Stellar Crown",
         "SV06: Twilight Masquerade",
@@ -39,9 +39,9 @@ class CardSetData:
         "SV: Shrouded Fable",
         "SV: Scarlet & Violet 151",
         "SV: Paldean Fates",
-    ]
+    ])
 
-    JAPANESE_SETS: List[str] = [
+    JAPANESE_SETS: List[str] = field(default_factory=lambda: [
         "SV7A: Paradise Dragona",
         "SV7: Stellar Miracle",
         "SV6A: Night Wanderer",
@@ -53,20 +53,20 @@ class CardSetData:
         "SV: Ancient Koraidon ex Starter Deck & Build Set",
         "SV8a: Terastal Fest ex",
         "SV8: Super Electric Breaker"
-    ]
+    ])
 
-    ENGLISH_RARITIES: List[str] = [
+    ENGLISH_RARITIES: List[str] = field(default_factory=lambda: [
         "Special Illustration Rare",
         "Illustration Rare",
         "Hyper Rare"
-    ]
+    ])
 
-    JAPANESE_RARITIES: List[str] = [
+    JAPANESE_RARITIES: List[str] = field(default_factory=lambda: [
         "Art Rare",
         "Super Rare",
         "Special Art Rare",
         "Ultra Rare"
-    ]
+    ])
 
     @classmethod
     def get_all_sets(cls) -> List[str]:
