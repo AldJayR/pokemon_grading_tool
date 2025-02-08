@@ -43,6 +43,7 @@ if RAILWAY_URL:
 INSTALLED_APPS = [
     'rest_framework',
     'grading_api',
+    'django_redis'
     'django_filters',
     'corsheaders',
     'django.contrib.admin',
