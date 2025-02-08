@@ -380,14 +380,15 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
     def scrape_all_sets(self, request):
         """Scrape all sets concurrently and save to database."""
         try:
-            # Add CSRF validation
-            if not request.user.is_authenticated:
-                return Response(
-                    {'error': 'Authentication required'},
-                    status=status.HTTP_401_UNAUTHORIZED
-                )
+            # Remove the authentication check
+            # if not request.user.is_authenticated:
+            #     return Response(
+            #         {'error': 'Authentication required'},
+            #         status=status.HTTP_401_UNAUTHORIZED
+            #     )
 
-            user = str(request.user)
+            # Use 'anonymous' as default user
+            user = 'anonymous'
             scrape_log = ScrapeLog.objects.create(user=user)
 
             # Start async task with SSL context
