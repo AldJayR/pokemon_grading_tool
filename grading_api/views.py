@@ -213,13 +213,23 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
         )
 
     def _make_safe_cache_key(self, *args) -> str:
-        """Create a Redis-safe cache key."""
+        """Create a memcached-safe cache key."""
         # Join args and clean invalid characters
-        key_parts = [str(arg).replace(' ', '_').replace(':', '_') for arg in args if arg]
+        key_parts = [str(arg).strip() for arg in args if arg]
         safe_key = '_'.join(key_parts)
-        # Remove any other problematic characters
-        safe_key = re.sub(r'[^a-zA-Z0-9_-]', '', safe_key)
-        return f"card_{safe_key}"[:250]
+        # Replace problematic characters
+        safe_key = re.sub(r'[\s:/\\?#\[\]@!$&\'()*+,;=]', '_', safe_key)
+        # Ensure key is not too long
+        if len(safe_key) > 200:
+            safe_key = safe_key[:197] + '...'
+        return safe_key
+
+    async def _clear_cache(self, key: str) -> None:
+        """Safely clear cache with error handling."""
+        try:
+            self._cache.delete(key)
+        except Exception as e:
+            logger.warning(f"Cache deletion failed for key {key}: {str(e)}")
 
     def _get_ssl_context(self):
         """Create a secure SSL context for HTTPS requests."""
@@ -469,7 +479,7 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                                 
                                 # Clear cache for this set
                                 cache_key = self._make_safe_cache_key('set', set_name, language)
-                                self._cache.delete(cache_key)
+                                await sync_to_async(self._clear_cache)(cache_key)
                             
                             # Add longer delay between sets
                             await asyncio.sleep(15)  # Increased from 5 to 15 seconds

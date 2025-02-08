@@ -104,32 +104,28 @@ TEMPLATES = [
 WSGI_APPLICATION = 'pokemon_grading_tool.wsgi.application'
 ASGI_APPLICATION = 'pokemon_grading_tool.asgi.application'
 
-# Caching
+# Update Redis Cache Configuration
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
         'LOCATION': os.environ.get('REDIS_URL', 'redis://localhost:6379/0'),
         'OPTIONS': {
-            'db': '0',
-            'client_class': 'django_redis.client.DefaultClient',
+            'db': 0,
             'retry_on_timeout': True,
-            'max_connections': 10,
-            'socket_connect_timeout': 5,
             'socket_timeout': 5,
-            # Add connection pool settings
-            'connection_pool_class_kwargs': {
-                'max_connections': 50
-            },
-            # Add retry settings
-            'retry_on_error': [Exception],
+            'socket_connect_timeout': 5,
+            'connection_pool_kwargs': {
+                'max_connections': 50,
+                'timeout': 20
+            }
         }
     }
 }
 
-# Add Redis-specific settings
-REDIS_TIMEOUT = 3600
-REDIS_CONNECT_RETRY = True
-REDIS_CONNECTION_POOL_CLASS = 'redis.BlockingConnectionPool'
+# Remove these as they're not needed
+# REDIS_TIMEOUT = 3600
+# REDIS_CONNECT_RETRY = True
+# REDIS_CONNECTION_POOL_CLASS = 'redis.BlockingConnectionPool'
 
 POKEMON_CARD_SETTINGS = {
     # Cache timeout in seconds (1 hour default)
