@@ -22,4 +22,5 @@ RUN pip install python-dotenv
 EXPOSE 8000
 
 # Run migrations and start Gunicorn at runtime
-CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn pokemon_grading_tool.asgi:application --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000"]
+CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn pokemon_grading_tool.asgi:application --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --timeout 60"]
+
