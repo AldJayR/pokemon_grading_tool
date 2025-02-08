@@ -384,15 +384,15 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                             results = await scraper.main([card_details])
                             
                             # Update progress
+                            batch_attempted = len(results)
+                            batch_updated = 0
+                            
                             # Update progress with counts and status message
-                            logger.info(f"Processing {language} set: {set_name}")
+                            logger.info(f"Processing {language} set: {set_name} ({batch_attempted} cards)")
                             await sync_to_async(scrape_log.update_progress)(
                                 success_count=batch_attempted,
                                 failure_count=batch_attempted - batch_updated
                             )
-                            
-                            batch_attempted = len(results)
-                            batch_updated = 0
                             
                             for card_data in results:
                                 if card_data.rarity in rarities:
