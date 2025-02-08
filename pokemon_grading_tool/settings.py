@@ -230,9 +230,6 @@ CSRF_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Strict'
 CSRF_COOKIE_SAMESITE = 'Strict'
 
-# Railway specific settings
-if 'RAILWAY_STATIC_URL' in os.environ:
-    STATIC_URL = os.environ.get('RAILWAY_STATIC_URL')
 
 # Default Auto Field
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
