@@ -45,7 +45,7 @@ class Config:
     MAX_REQUESTS_EBAY: int = 20
     CACHE_HOURS: int = 24
     MAX_RETRIES: int = 3
-    RETRY_DELAYS: tuple = (1, 3, 5)
+    RETRY_DELAYS: tuple = (5, 10, 20)
     TIMEOUT: int = 30
     TIMEOUT_SECONDS: int = 30
     CONCURRENCY: int = 10
@@ -204,7 +204,7 @@ async def fetch_tcgplayer_data(card_details: CardDetails, context) -> List[CardP
                         url = build_tcgplayer_url(card_details, rarity)
                         logger.info(f"Accessing URL: {url}")
 
-                        await page.goto(url)
+                        await page.goto(url, wait_until="networkidle", timeout=60000)
                         logger.info("Page loaded")
                         
                         if results := await fetch_and_process_page(page, card_details, rarity):
@@ -251,7 +251,7 @@ async def fetch_and_process_page(page, card_details: CardDetails, rarity: str) -
     """Fetches and processes a single TCGPlayer page"""
     try:
         logger.info("Waiting for selector")
-        await page.wait_for_selector(".search-result, .blank-slate", timeout=10000)
+        await page.wait_for_selector(".search-result, .blank-slate", timeout=30000)
 
         logger.info("Getting page content")
         html = await page.content()
@@ -518,7 +518,9 @@ async def main(card_details_list: List[CardDetails]) -> List[CardPriceData]:
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+            )
             
             try:
                 async with aiohttp.ClientSession(
