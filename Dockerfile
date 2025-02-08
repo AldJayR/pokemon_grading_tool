@@ -17,6 +17,9 @@ COPY . .
 
 ENV DJANGO_SETTINGS_MODULE=pokemon_grading_tool.settings
 ENV PYTHONUNBUFFERED=1
+ENV DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+ENV DEBUG=${DEBUG}
+ENV ALLOWED_HOSTS=${ALLOWED_HOSTS}
 
 # Run migrations (this is the important part)
 RUN python manage.py migrate --noinput
