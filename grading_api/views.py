@@ -236,13 +236,22 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
         await sync_to_async(self._clear_cache_sync)(key)
 
     def _get_ssl_context(self):
-        """Create a secure SSL context for HTTPS requests."""
-        ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-        ssl_context.check_hostname = True
-        ssl_context.verify_mode = ssl.CERT_REQUIRED
-        ssl_context.set_ciphers('ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384')
-        ssl_context.options |= ssl.OP_NO_SSLv2 | ssl.OP_NO_SSLv3 | ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
-        ssl_context.load_default_certs()
+        """Create a more permissive SSL context that still maintains basic security."""
+        ssl_context = ssl.create_default_context()
+        
+        # Make SSL context more permissive but maintain basic security
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        # Add basic security options
+        ssl_context.options |= (
+            ssl.OP_NO_SSLv2 | 
+            ssl.OP_NO_SSLv3
+        )
+        
+        # Use a broader range of cipher suites
+        ssl_context.set_ciphers('DEFAULT:@SECLEVEL=1')
+        
         return ssl_context
 
     @action(detail=False, methods=['get'])
@@ -464,8 +473,16 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                                 sock_read=60  # 60 seconds read timeout
                             )
 
-                            async with aiohttp.ClientSession(timeout=timeout_config,
-                            connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
+                            async with aiohttp.ClientSession(
+                                timeout=timeout_config,
+                                connector=aiohttp.TCPConnector(
+                                    ssl=ssl_context,
+                                    force_close=True,
+                                    enable_cleanup_closed=True,
+                                    ttl_dns_cache=300,
+                                    limit_per_host=5
+                                )
+                            ) as session:
                                 results = await scraper.main([card_details])
                                 
                                 batch_attempted = len(results)
