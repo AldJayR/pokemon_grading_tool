@@ -234,7 +234,7 @@ async def fetch_tcgplayer_data(card_details: CardDetails, context) -> List[CardP
 def build_tcgplayer_url(card: CardDetails, rarity: str) -> str:
     """
     Build a TCGPlayer URL for a given CardDetails and rarity.
-    For English, e.g.:
+    For example (for English):
     https://www.tcgplayer.com/search/pokemon/product?productLineName=pokemon&view=grid&page=1&
     ProductTypeName=Cards&Rarity=Special+Illustration+Rare&q=Pikachu&setName=surging-sparks|sv08-surging-sparks&Condition=Near+Mint
     """
@@ -259,14 +259,16 @@ def build_tcgplayer_url(card: CardDetails, rarity: str) -> str:
     if card.name:
         params["q"] = card.name
 
+    # Helper function to normalize set names.
+    def normalize_set_name(s: str) -> str:
+        return s.strip().lower().replace("&", "and").replace(" ", "-")
+
     if card.set_name:
-        # If set_name contains a colon, split it.
         if ":" in card.set_name:
-            clean_set = card.set_name.split(":", 1)[1].strip().lower().replace(" ", "-")
-            original_set = card.set_name.replace(":", "").strip().lower().replace(" ", "-")
+            clean_set = normalize_set_name(card.set_name.split(":", 1)[1])
+            original_set = normalize_set_name(card.set_name.replace(":", ""))
         else:
-            clean_set = original_set = card.set_name.strip().lower().replace(" ", "-")
-        # Combine both versions with a pipe.
+            clean_set = original_set = normalize_set_name(card.set_name)
         params["setName"] = f"{clean_set}|{original_set}"
 
     # Manually join the parameters (no URL encoding).
@@ -431,6 +433,11 @@ async def get_ebay_psa10_price_async(session: aiohttp.ClientSession, card_detail
         "LH_Sold": 1,
         "LH_Complete": 1
     }
+
+    # Manually join parameters without URL encoding.
+    query_string = "&".join(f"{key}={value}" for key, value in params.items())
+    ebay_url = f"https://www.ebay.com/sch/i.html?{query_string}"
+    logger.info(f"Accessing eBay URL: {ebay_url}")
 
     try:
         async with session.get(
