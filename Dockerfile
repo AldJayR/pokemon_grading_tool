@@ -1,5 +1,8 @@
 FROM python:3.12.2-slim
 
+RUN apt-get update && apt-get install -y ca-certificates && update-ca-certificates
+
+
 # Set the working directory
 WORKDIR /app
 

@@ -22,6 +22,7 @@ import aiohttp
 import ssl
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication
+import threading
 
 from .models import PokemonCard, ScrapeLog
 from .serializers import PokemonCardSerializer
@@ -398,29 +399,23 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'])
     def scrape_all_sets(self, request):
-        """Scrape all sets concurrently and save to database."""
+        """Scrape all sets concurrently and save to DB in a background thread."""
         try:
-            # Remove the authentication check
-            # if not request.user.is_authenticated:
-            #     return Response(
-            #         {'error': 'Authentication required'},
-            #         status=status.HTTP_401_UNAUTHORIZED
-            #     )
-
             # Use 'anonymous' as default user
             user = 'anonymous'
             scrape_log = ScrapeLog.objects.create(user=user)
 
-            async_to_sync(self._scrape_all_sets_async)(
-                scrape_log.id
-            )
+            # Launch scraping as a background thread
+            threading.Thread(
+                target=lambda: async_to_sync(self._scrape_all_sets_async)(scrape_log.id),
+                daemon=True
+            ).start()
 
             return Response({
                 'message': 'Bulk scrape started',
                 'log_id': scrape_log.id,
                 'status': 'processing'
             })
-
         except Exception as e:
             logger.error(f"Failed to start bulk scrape: {str(e)}", exc_info=True)
             return Response(
