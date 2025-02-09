@@ -236,22 +236,12 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
         await sync_to_async(self._clear_cache_sync)(key)
 
     def _get_ssl_context(self):
-        """Create a more permissive SSL context that still maintains basic security."""
         ssl_context = ssl.create_default_context()
-        
-        # Make SSL context more permissive but maintain basic security
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        
-        # Add basic security options
-        ssl_context.options |= (
-            ssl.OP_NO_SSLv2 | 
-            ssl.OP_NO_SSLv3
-        )
-        
-        # Use a broader range of cipher suites
-        ssl_context.set_ciphers('DEFAULT:@SECLEVEL=1')
-        
+        # Enable hostname and certificate verification
+        ssl_context.check_hostname = True
+        ssl_context.verify_mode = ssl.CERT_REQUIRED
+        # Use modern cipher suites
+        ssl_context.set_ciphers('ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20')
         return ssl_context
 
     @action(detail=False, methods=['get'])
@@ -468,9 +458,9 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
 
                             # Add timeout configuration
                             timeout_config = aiohttp.ClientTimeout(
-                                total=300,  # 5 minutes total timeout
-                                connect=60,  # 60 seconds connection timeout
-                                sock_read=60  # 60 seconds read timeout
+                                total=600,  # 5 minutes total timeout
+                                connect=120,  # 60 seconds connection timeout
+                                sock_read=120  # 60 seconds read timeout
                             )
 
                             async with aiohttp.ClientSession(
