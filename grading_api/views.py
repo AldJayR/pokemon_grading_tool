@@ -522,48 +522,51 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
             await sync_to_async(scrape_log.fail)(str(e))
 
     def list(self, request, *args, **kwargs):
-        """Get cards from database with pagination and freshness check."""
+        """Get cards from database with simplified response."""
         queryset = self.filter_queryset(self.get_queryset())
-
-        # Check data freshness
-        fresh_data_cutoff = timezone.now() - timedelta(hours=24)
-        is_fresh = queryset.filter(last_updated__gte=fresh_data_cutoff).exists()
-
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            response = self.get_paginated_response(serializer.data)
-            response.data['is_fresh'] = is_fresh
-            return response
-
+        
+        # If using pagination
+        if hasattr(self, 'paginator') and self.paginator and request.query_params.get('page', None):
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+        
+        # Return just the serialized data without pagination
         serializer = self.get_serializer(queryset, many=True)
-        return Response({
-            'message': 'Retrieved from database',
-            'cards': serializer.data,
-            'is_fresh': is_fresh
-        })
+        return Response(serializer.data)
 
     @action(detail=False, methods=['get'])
     def fetch_card(self, request):
-        """Fetch specific card by name with filtering and pagination."""
-        return self.list(request)
-
-    @action(detail=False, methods=['get'])
-    def fetch_card_set(self, request):
-        """Fetch specific card by name and set with filtering and pagination."""
-        return self.list(request)
-
-    @action(detail=False, methods=['get'])
-    def fetch_card_rarity(self, request):
-        """Fetch specific card by name and rarity with filtering and pagination."""
+        """Fetch specific card by name with simplified response."""
+        # Remove pagination for this endpoint
+        self.pagination_class = None
         return self.list(request)
 
     @action(detail=False, methods=['get'])
     def fetch_set(self, request):
-        """Fetch cards by set with filtering and pagination."""
+        """Fetch cards by set with simplified response."""
+        # Remove pagination for this endpoint
+        self.pagination_class = None
+        return self.list(request)
+
+    @action(detail=False, methods=['get'])
+    def fetch_card_set(self, request):
+        """Fetch specific card by name and set with simplified response."""
+        # Remove pagination for this endpoint
+        self.pagination_class = None
+        return self.list(request)
+
+    @action(detail=False, methods=['get'])
+    def fetch_card_rarity(self, request):
+        """Fetch specific card by name and rarity with simplified response."""
+        # Remove pagination for this endpoint
+        self.pagination_class = None
         return self.list(request)
 
     @action(detail=False, methods=['get'])
     def fetch_set_rarity(self, request):
-        """Fetch cards by set and rarity with filtering and pagination."""
+        """Fetch cards by set and rarity with simplified response."""
+        # Remove pagination for this endpoint
+        self.pagination_class = None
         return self.list(request)
