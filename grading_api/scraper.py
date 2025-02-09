@@ -421,7 +421,8 @@ def extract_product_id(url: str) -> Optional[str]:
 @limits(calls=Config.MAX_REQUESTS_EBAY, period=Config.ONE_MINUTE)
 async def get_ebay_psa10_price_async(session: aiohttp.ClientSession, card_details: CardDetails) -> Optional[float]:
     """Fetches PSA 10 prices from eBay with improved error handling and specific card matching"""
-    search_query = f"{card_details.name} {card_details.set_name} PSA 10"
+    search_query = f"{card_details.name} PSA 10"
+
     if card_details.language == "Japanese":
         search_query += " Japanese"
 
@@ -462,51 +463,49 @@ async def get_ebay_psa10_price_async(session: aiohttp.ClientSession, card_detail
         return None
 
 def extract_ebay_prices(html: str, card_details: CardDetails) -> List[float]:
-    """Extracts prices from eBay HTML with improved card matching"""
+    """Extracts prices from eBay HTML with improved card matching."""
     soup = BeautifulSoup(html, "lxml")
     prices = []
 
-    # Extract key components from the search query
-    search_parts = card_details.name.lower().split()
-    card_name = search_parts[0]  # Base card name (e.g., "pikachu")
+    # Remove hyphen-only tokens from the card name.
+    search_parts = [part for part in card_details.name.lower().split() if part != "-"]
+    if not search_parts:
+        return prices
 
-    # Look for card number pattern (e.g., "123/456")
+    base_name = search_parts[0]  # e.g., "bruxish"
     card_number = next((part for part in search_parts if re.match(r'\d+/\d+', part)), None)
 
-    # Extract rarity keywords
-    rarity_keywords = [word.lower() for word in search_parts if word.lower() in
-                      ['illustration', 'special', 'hyper', 'rare', 'art', 'super', 'ultra']]
+    # Use a set for fast membership checks.
+    rarity_keywords = {word for word in search_parts
+                       if word in {"illustration", "special", "hyper", "rare", "art", "super", "ultra"}}
 
-    for item in soup.find_all("li", class_="s-item s-item__pl-on-bottom"):
-        title = item.find("div", class_="s-item__title")
-        if not title:
+    for li in soup.find_all("li", class_="s-item s-item__pl-on-bottom"):
+        title_div = li.find("div", class_="s-item__title")
+        if not title_div:
             continue
 
-        title_text = title.text.strip().lower()
+        title_text = title_div.get_text(strip=True).lower()
 
-        # Must have the base card name and PSA 10
-        if card_name not in title_text or "psa 10" not in title_text:
+        # Check required criteria:
+        if base_name not in title_text or "psa 10" not in title_text:
             continue
-
-        # If we have a card number, it should be present
         if card_number and card_number not in title_text:
             continue
-
-        # Check for at least one rarity keyword match if rarity keywords exist
         if rarity_keywords and not any(keyword in title_text for keyword in rarity_keywords):
             continue
 
-        # Skip if it's not a PSA 10
-        if "psa 10" not in title_text:
+        # Extract and parse the price
+        price_span = li.find("span", class_="s-item__price")
+        if not price_span:
             continue
 
-        if price_span := item.find("span", class_="s-item__price"):
-            if price_match := re.search(r'\$([\d,]+\.?\d*)', price_span.text.strip()):
-                try:
-                    price = float(price_match.group(1).replace(',', ''))
-                    prices.append(price)
-                except ValueError:
-                    continue
+        match = re.search(r'\$([\d,]+\.?\d*)', price_span.get_text(strip=True))
+        if match:
+            try:
+                price = float(match.group(1).replace(',', ''))
+                prices.append(price)
+            except ValueError:
+                continue
 
     return prices
 
