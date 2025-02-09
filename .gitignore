@@ -44,3 +44,5 @@ staticfiles/
 node_modules/
 package.json
 pnpm-lock.yaml
+
+test_tcgplayer_url.py

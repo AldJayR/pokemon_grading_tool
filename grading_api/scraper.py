@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from aiohttp import ClientTimeout
 import aiofiles
 import json
+from urllib.parse import urlencode
 
 # Data classes for type safety and better structure
 @dataclass
@@ -230,32 +231,47 @@ async def fetch_tcgplayer_data(card_details: CardDetails, context) -> List[CardP
 
     return all_card_data
 
-def build_tcgplayer_url(card_details: CardDetails, rarity: str) -> str:
-    """Constructs the TCGPlayer URL based on card details"""
-    base = "https://www.tcgplayer.com/search/pokemon"
-    if card_details.language == "Japanese":
-        base += "-japan"
+def build_tcgplayer_url(card: CardDetails, rarity: str) -> str:
+    """
+    Build a TCGPlayer URL for a given CardDetails and rarity.
+    For English, e.g.:
+    https://www.tcgplayer.com/search/pokemon/product?productLineName=pokemon&view=grid&page=1&
+    ProductTypeName=Cards&Rarity=Special+Illustration+Rare&q=Pikachu&setName=surging-sparks|sv08-surging-sparks&Condition=Near+Mint
+    """
+    # Determine base URL and product line based on language.
+    if card.language.lower() == "japanese":
+        base_url = "https://www.tcgplayer.com/search/pokemon-japan/product"
+        product_line = "pokemon-japan"
+    else:
+        base_url = "https://www.tcgplayer.com/search/pokemon/product"
+        product_line = "pokemon"
 
+    # Prepare query parameters.
     params = {
-        "productLineName": "pokemon" if card_details.language == "English" else "pokemon-japan",
+        "productLineName": product_line,
         "view": "grid",
         "page": "1",
         "ProductTypeName": "Cards",
-        "Rarity": rarity.replace(" ", "+")
+        "Rarity": rarity.replace(" ", "+"),
+        "Condition": "Near+Mint"
     }
 
-    if card_details.name:
-        params["q"] = card_details.name.replace(" ", "+")
+    if card.name:
+        params["q"] = card.name
 
-    # Add set name if provided
-    if card_details.set_name:
-        set_name = card_details.set_name
-        if ": " in set_name:
-            set_name = set_name.split(": ")[1]
-        params["setName"] = set_name.replace(" ", "-").lower()
+    if card.set_name:
+        # If set_name contains a colon, split it.
+        if ":" in card.set_name:
+            clean_set = card.set_name.split(":", 1)[1].strip().lower().replace(" ", "-")
+            original_set = card.set_name.replace(":", "").strip().lower().replace(" ", "-")
+        else:
+            clean_set = original_set = card.set_name.strip().lower().replace(" ", "-")
+        # Combine both versions with a pipe.
+        params["setName"] = f"{clean_set}|{original_set}"
 
-    query_string = "&".join(f"{k}={v}" for k, v in params.items())
-    return f"{base}/product?{query_string}"
+    # Manually join the parameters (no URL encoding).
+    query_string = "&".join(f"{key}={value}" for key, value in params.items())
+    return f"{base_url}?{query_string}"
 
 async def fetch_and_process_page(page, card_details: CardDetails, rarity: str) -> List[CardPriceData]:
     """Fetches and processes TCGPlayer pages with pagination support"""

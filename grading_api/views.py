@@ -452,20 +452,21 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                                 language=language
                             )
 
-                            # Add timeout configuration
+                            # Increase overall timeout to 15 minutes (900 seconds) and connection/read timeouts
                             timeout_config = aiohttp.ClientTimeout(
-                                total=600,  # 10 minutes total timeout
-                                connect=120,  # 2 minutes connection timeout
-                                sock_read=120  # 2 minutes read timeout
+                                total=900,      # 15 minutes total timeout
+                                connect=180,    # 3 minutes connection timeout
+                                sock_read=180   # 3 minutes read timeout
                             )
 
+                            # Increase keepalive timeout to help prevent the connection from dropping
                             connector = aiohttp.TCPConnector(
                                 ssl=ssl_context,
                                 force_close=False,
                                 enable_cleanup_closed=True,
                                 ttl_dns_cache=300,
                                 limit_per_host=5,
-                                keepalive_timeout=30  # Send keep-alive packets every 30 seconds
+                                keepalive_timeout=60  # increased from 30 seconds to 60 seconds
                             )
 
                             async with aiohttp.ClientSession(
