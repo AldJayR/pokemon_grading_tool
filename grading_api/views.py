@@ -237,9 +237,12 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
 
     def _get_ssl_context(self):
         """Create a secure SSL context for HTTPS requests."""
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE if settings.DEBUG else ssl.CERT_REQUIRED
+        ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        ssl_context.check_hostname = True
+        ssl_context.verify_mode = ssl.CERT_REQUIRED
+        ssl_context.set_ciphers('ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384')
+        ssl_context.options |= ssl.OP_NO_SSLv2 | ssl.OP_NO_SSLv3 | ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
+        ssl_context.load_default_certs()
         return ssl_context
 
     @action(detail=False, methods=['get'])
@@ -446,9 +449,7 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                             )
                             
                             # Configure longer timeouts and SSL context
-                            ssl_context = ssl.create_default_context()
-                            ssl_context.check_hostname = False
-                            ssl_context.verify_mode = ssl.CERT_NONE
+                            ssl_context = self._get_ssl_context()
                             
                             card_details = scraper.CardDetails(
                                 name="",
@@ -463,7 +464,8 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                                 sock_read=60  # 60 seconds read timeout
                             )
 
-                            async with aiohttp.ClientSession(timeout=timeout_config) as session:
+                            async with aiohttp.ClientSession(timeout=timeout_config,
+                            connector=aiohttp.TCPConnector(ssl=ssl_context)) as session:
                                 results = await scraper.main([card_details])
                                 
                                 batch_attempted = len(results)
