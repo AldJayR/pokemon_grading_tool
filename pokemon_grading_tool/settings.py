@@ -29,6 +29,8 @@ DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 ALLOWED_HOSTS = [
     os.environ.get('RAILWAY_PUBLIC_DOMAIN', ''),
     'pokemongradingtool-production.up.railway.app',
+    'localhost',
+    '127.0.0.1'
 ]
 
 VERCEL_URL = os.getenv('VERCEL_URL')
@@ -114,18 +116,9 @@ CACHES = {
             'retry_on_timeout': True,
             'socket_timeout': 5,
             'socket_connect_timeout': 5,
-            'connection_pool_kwargs': {
-                'max_connections': 50,
-                'timeout': 20
-            }
-        }
+        },
     }
 }
-
-# Remove these as they're not needed
-# REDIS_TIMEOUT = 3600
-# REDIS_CONNECT_RETRY = True
-# REDIS_CONNECTION_POOL_CLASS = 'redis.BlockingConnectionPool'
 
 POKEMON_CARD_SETTINGS = {
     # Cache timeout in seconds (1 hour default)

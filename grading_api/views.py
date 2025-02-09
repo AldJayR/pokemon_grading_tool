@@ -224,12 +224,16 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
             safe_key = safe_key[:197] + '...'
         return safe_key
 
-    async def _clear_cache(self, key: str) -> None:
-        """Safely clear cache with error handling."""
+    def _clear_cache_sync(self, key: str) -> None:
+        """Synchronous cache clearing function."""
         try:
             self._cache.delete(key)
         except Exception as e:
             logger.warning(f"Cache deletion failed for key {key}: {str(e)}")
+
+    async def _clear_cache_async(self, key: str) -> None:
+        """Asynchronous wrapper for cache clearing."""
+        await sync_to_async(self._clear_cache_sync)(key)
 
     def _get_ssl_context(self):
         """Create a secure SSL context for HTTPS requests."""
@@ -477,9 +481,9 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                                 total_attempted += batch_attempted
                                 total_updated += batch_updated
                                 
-                                # Clear cache for this set
+                                # Clear cache for this set using the async version
                                 cache_key = self._make_safe_cache_key('set', set_name, language)
-                                await sync_to_async(self._clear_cache)(cache_key)
+                                await self._clear_cache_async(cache_key)
                             
                             # Add longer delay between sets
                             await asyncio.sleep(15)  # Increased from 5 to 15 seconds
