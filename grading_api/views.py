@@ -28,6 +28,9 @@ from .serializers import PokemonCardSerializer
 from . import scraper
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
+aiohttp_logger = logging.getLogger('aiohttp')
+aiohttp_logger.setLevel(logging.DEBUG)
 
 T = TypeVar('T')  # Type variable for generic functions
 
@@ -463,16 +466,7 @@ class PokemonCardViewSet(viewsets.ModelViewSet):
                                 sock_read=120  # 60 seconds read timeout
                             )
 
-                            async with aiohttp.ClientSession(
-                                timeout=timeout_config,
-                                connector=aiohttp.TCPConnector(
-                                    ssl=ssl_context,
-                                    force_close=True,
-                                    enable_cleanup_closed=True,
-                                    ttl_dns_cache=300,
-                                    limit_per_host=5
-                                )
-                            ) as session:
+                            async with aiohttp.ClientSession() as session:
                                 results = await scraper.main([card_details])
                                 
                                 batch_attempted = len(results)
