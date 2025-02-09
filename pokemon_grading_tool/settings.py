@@ -76,7 +76,7 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 # CORS
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
-    f"https://{host}" for host in ALLOWED_HOSTS if host
+    "https://pokemon-proxx.vercel.app"
 ]
 
 CSRF_TRUSTED_ORIGINS = [
