@@ -17,6 +17,7 @@ import aiofiles
 import json
 from urllib.parse import urlencode
 import numpy as np
+import string
 
 # Data classes for type safety and better structure
 @dataclass
@@ -470,16 +471,18 @@ def extract_ebay_prices(html: str, card_details: CardDetails) -> List[float]:
     soup = BeautifulSoup(html, "lxml")
     prices = []
 
-    # Remove hyphen-only tokens from the card name.
-    search_parts = [part for part in card_details.name.lower().split() if part != "-"]
-    if not search_parts:
+    # Split the card name into tokens and remove hyphen-only tokens.
+    tokens = [part for part in card_details.name.lower().split() if part != "-"]
+    if not tokens:
         return prices
 
-    base_name = search_parts[0]  # e.g. "bruxish"
-    card_number = next((part for part in search_parts if re.match(r'\d+/\d+', part)), None)
-    # Optionally, use the set name or other specific keywords only if needed.
-    # Here, we continue to use rarity keywords if present.
-    rarity_keywords = {word for word in search_parts if word in {"illustration", "special", "hyper", "rare", "art", "super", "ultra"}}
+    # Extract card number if present.
+    card_number = next((t for t in tokens if re.match(r'\d+/\d+', t)), None)
+    # Build a card title by filtering out the card number.
+    card_title = " ".join(t for t in tokens if t != card_number)
+
+    # Optionally, continue to use rarity keywords based on the tokens.
+    rarity_keywords = {word for word in tokens if word in {"illustration", "special", "hyper", "rare", "art", "super", "ultra"}}
 
     for li in soup.find_all("li", class_="s-item s-item__pl-on-bottom"):
         title_div = li.find("div", class_="s-item__title")
@@ -487,19 +490,21 @@ def extract_ebay_prices(html: str, card_details: CardDetails) -> List[float]:
             continue
 
         title_text = title_div.get_text(strip=True).lower()
-        # Debug logging: uncomment if needed.
         logger.debug(f"Processing title: {title_text}")
 
-        # Require that "psa 10" is in the title and base name is mentioned.
+        # Require that the listing has "psa 10".
         if "psa 10" not in title_text:
             continue
-        if base_name not in title_text:
+        # Use the entire card title (e.g. "counter gain") rather than only the first token.
+        if card_title not in title_text:
             continue
+        # If a card number is available, check that it is in the title.
         if card_number and card_number not in title_text:
             continue
+        # Reject "japanese" keyword if our language isn’t Japanese.
         if card_details.language.lower() != "japanese" and "japanese" in title_text:
             continue
-        # Optionally, check for rarity keywords if you find they improve precision.
+        # Optionally, check for rarity keywords if desired.
         if rarity_keywords and not any(keyword in title_text for keyword in rarity_keywords):
             continue
 
