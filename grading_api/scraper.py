@@ -25,14 +25,6 @@ class CardDetails:
     language: str = "English"
     product_id: Optional[str] = None  # Add product_id
 
-@dataclass(frozen=True)
-class EbaySearchTerms:
-    base_terms: set[str]
-    card_number: Optional[str]
-    rarity_keywords: set[str]
-    psa_check: re.Pattern = re.compile(r'\bpsa\s*10\b', re.I)
-
-
 @dataclass
 class CardPriceData:
     card_name: str
@@ -476,74 +468,56 @@ async def get_ebay_psa10_price_async(
         return None
     
 
-def process_ebay_search_terms(card_details: CardDetails) -> EbaySearchTerms:
-    """Optimized term processing with regex pre-compilation"""
-    name_parts = re.split(r'[-/\s]+', card_details.name.lower())
-    search_parts = [p for p in name_parts if p and p not in ("ex", "vmax")]
-    
-    card_number = next((re.search(r'\d+/\d+', p).group() for p in name_parts 
-                       if re.search(r'\d+/\d+', p)), None)
-    
-    rarity_keywords = {w for w in search_parts 
-                      if w in {"illustration", "special", "hyper", "art"}}
-    
-    if card_details.set_name:
-        search_parts.extend(re.split(r'[-/\s]+', card_details.set_name.lower()))
-        
-    return EbaySearchTerms(
-        base_terms=set(search_parts),
-        card_number=card_number,
-        rarity_keywords=rarity_keywords
-    )
-
-
-
 async def extract_ebay_prices(html: str, card_details: CardDetails) -> List[float]:
     """Extracts prices from eBay HTML with optimized parsing and matching"""
-    # Use SoupStrainer to parse only relevant sections
+    # Parse only relevant sections
     strainer = SoupStrainer(class_="s-item")
     soup = BeautifulSoup(html, "lxml", parse_only=strainer)
     
-    search_terms = process_ebay_search_terms(card_details)
     prices: List[float] = []
     
-    # Compile regex pattern once
+    # Define minimal matching tokens (ignore tokens like "ex" or "vmax")
+    base_tokens = [token for token in card_details.name.lower().split() if token not in ("ex", "vmax")]
+    required_token = base_tokens[0] if base_tokens else ""
+    
+    # Get card number from card name (if any)
+    card_number_match = next((re.search(r'\d+/\d+', token) for token in card_details.name.lower().split()), None)
+    card_number = card_number_match.group(0) if card_number_match else None
+
     price_pattern = re.compile(r'\$([\d,]+\.?\d*)')
     
     for li in soup.find_all("li", class_="s-item"):
+        # Skip separator items
         if "s-item__sep" in li.get("class", []):
             continue
-            
+
         title_div = li.find("div", class_="s-item__title")
         if not title_div:
             continue
-            
+
         title_text = title_div.get_text(strip=True).lower()
         
-        # Quick rejection checks
+        # Require exact "psa 10" wording
         if "psa 10" not in title_text:
             continue
-            
-        if not all(term in title_text for term in search_terms.base_terms):
-            continue
-            
-        if search_terms.card_number and search_terms.card_number not in title_text:
-            continue
-            
-        if search_terms.rarity_keywords and not any(
-            keyword in title_text for keyword in search_terms.rarity_keywords
-        ):
-            continue
         
+        # Check required token and card number (if available)
+        if required_token and required_token not in title_text:
+            continue
+        if card_number and card_number not in title_text:
+            continue
+
+        # Extract the price
         price_span = li.find("span", class_="s-item__price")
         if not price_span:
             continue
-            
+        
         price_match = price_pattern.search(price_span.get_text())
         if price_match:
             try:
                 price = float(price_match.group(1).replace(',', ''))
-                if 0 < price < 100000:  # Reasonable bounds check
+                # Make sure the price is within reasonable bounds
+                if 0 < price < 100000:
                     prices.append(price)
                     logger.debug(f"Found valid price: ${price}")
             except ValueError:
