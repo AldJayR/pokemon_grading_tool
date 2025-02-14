@@ -16,6 +16,7 @@ from aiohttp import ClientTimeout
 import aiofiles
 import json
 from urllib.parse import urlencode
+import numpy as np
 
 # Data classes for type safety and better structure
 @dataclass
@@ -521,18 +522,32 @@ def extract_ebay_prices(html: str, card_details: CardDetails) -> List[float]:
 
 
 def calculate_average_price(prices: List[float]) -> Optional[float]:
-    """Calculate a trimmed mean to remove outliers."""
+    """Calculate average price using an IQR-based trimmed mean.
+
+    Uses NumPy to accurately compute the 25th (Q1) and 75th (Q3) percentiles,
+    trims values outside the [Q1 - 1.5*IQR, Q3 + 1.5*IQR] range, and returns the mean
+    of the remaining prices. Falls back to a simple mean if no prices remain.
+    """
     if not prices:
         return None
 
     if len(prices) < 3:
         return sum(prices) / len(prices)
 
-    mean = sum(prices) / len(prices)
-    std = (sum((x - mean) ** 2 for x in prices) / len(prices)) ** 0.5
-    filtered_prices = [p for p in prices if abs(p - mean) <= 2 * std]
+    prices_array = np.array(prices)
+    q1 = np.percentile(prices_array, 25)
+    q3 = np.percentile(prices_array, 75)
+    iqr = q3 - q1
 
-    return sum(filtered_prices) / len(filtered_prices) if filtered_prices else mean
+    lower_bound = q1 - 1.5 * iqr
+    upper_bound = q3 + 1.5 * iqr
+
+    # Trim outliers using vectorized filtering
+    trimmed = prices_array[(prices_array >= lower_bound) & (prices_array <= upper_bound)]
+    if trimmed.size == 0:
+        trimmed = prices_array
+
+    return float(trimmed.mean())
 
 async def process_card_batch(
     card_details_list: List[CardDetails],
