@@ -1,6 +1,6 @@
 from playwright.async_api import async_playwright
 import asyncio
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, SoupStrainer
 import re
 from datetime import datetime, timedelta
 import aiohttp
@@ -24,6 +24,14 @@ class CardDetails:
     set_name: str
     language: str = "English"
     product_id: Optional[str] = None  # Add product_id
+
+@dataclass(frozen=True)
+class EbaySearchTerms:
+    base_terms: set[str]
+    card_number: Optional[str]
+    rarity_keywords: set[str]
+    psa_check: re.Pattern = re.compile(r'\bpsa\s*10\b', re.I)
+
 
 @dataclass
 class CardPriceData:
@@ -419,10 +427,17 @@ def extract_product_id(url: str) -> Optional[str]:
 
 @sleep_and_retry
 @limits(calls=Config.MAX_REQUESTS_EBAY, period=Config.ONE_MINUTE)
-async def get_ebay_psa10_price_async(session: aiohttp.ClientSession, card_details: CardDetails) -> Optional[float]:
-    """Fetches PSA 10 prices from eBay with improved error handling and specific card matching"""
-    search_query = f"{card_details.name} PSA 10"
+async def get_ebay_psa10_price_async(
+    session: aiohttp.ClientSession, 
+    card_details: CardDetails
+) -> Optional[float]:
+    """Fetches PSA 10 prices from eBay with optimized searching and caching"""
+    cache_key = f"ebay_psa10_{card_details.name}_{card_details.language}"
+    cached_price = await price_cache.get(cache_key)
+    if cached_price is not None:
+        return cached_price
 
+    search_query = f"{card_details.name} PSA 10"
     if card_details.language == "Japanese":
         search_query += " Japanese"
 
@@ -435,11 +450,6 @@ async def get_ebay_psa10_price_async(session: aiohttp.ClientSession, card_detail
         "LH_Complete": 1
     }
 
-    # Manually join parameters without URL encoding.
-    query_string = "&".join(f"{key}={value}" for key, value in params.items())
-    ebay_url = f"https://www.ebay.com/sch/i.html?{query_string}"
-    logger.info(f"Accessing eBay URL: {ebay_url}")
-
     try:
         async with session.get(
             "https://www.ebay.com/sch/i.html",
@@ -450,88 +460,112 @@ async def get_ebay_psa10_price_async(session: aiohttp.ClientSession, card_detail
                 raise RequestError(f"eBay returned status code {response.status}")
 
             html = await response.text()
-            prices = extract_ebay_prices(html, card_details)
+            prices = await extract_ebay_prices(html, card_details)
 
             if not prices:
                 logger.warning(f"No valid prices found for {card_details.name}")
                 return None
 
-            return calculate_average_price(prices)
+            avg_price = calculate_average_price(prices)
+            if avg_price is not None:
+                await price_cache.set(cache_key, avg_price)
+            return avg_price
 
     except Exception as e:
         logger.error(f"Error fetching eBay data for {card_details.name}: {str(e)}", exc_info=True)
         return None
+    
 
-def extract_ebay_prices(html: str, card_details: CardDetails) -> List[float]:
-    """Extracts prices from eBay HTML with improved card matching."""
-    soup = BeautifulSoup(html, "lxml")
-    prices = []
+def process_ebay_search_terms(card_details: CardDetails) -> EbaySearchTerms:
+    """Optimized term processing with regex pre-compilation"""
+    name_parts = re.split(r'[-/\s]+', card_details.name.lower())
+    search_parts = [p for p in name_parts if p and p not in ("ex", "vmax")]
+    
+    card_number = next((re.search(r'\d+/\d+', p).group() for p in name_parts 
+                       if re.search(r'\d+/\d+', p)), None)
+    
+    rarity_keywords = {w for w in search_parts 
+                      if w in {"illustration", "special", "hyper", "art"}}
+    
+    if card_details.set_name:
+        search_parts.extend(re.split(r'[-/\s]+', card_details.set_name.lower()))
+        
+    return EbaySearchTerms(
+        base_terms=set(search_parts),
+        card_number=card_number,
+        rarity_keywords=rarity_keywords
+    )
 
-    # Remove hyphen-only tokens from the card name.
-    search_parts = [part for part in card_details.name.lower().split() if part != "-"]
-    if not search_parts:
-        return prices
 
-    base_name = search_parts[0]  # e.g., "bruxish"
-    card_number = next((part for part in search_parts if re.match(r'\d+/\d+', part)), None)
 
-    # Use a set for fast membership checks.
-    rarity_keywords = {word for word in search_parts
-                       if word in {"illustration", "special", "hyper", "rare", "art", "super", "ultra"}}
-
-    for li in soup.find_all("li", class_="s-item s-item__pl-on-bottom"):
+async def extract_ebay_prices(html: str, card_details: CardDetails) -> List[float]:
+    """Extracts prices from eBay HTML with optimized parsing and matching"""
+    # Use SoupStrainer to parse only relevant sections
+    strainer = SoupStrainer(class_="s-item")
+    soup = BeautifulSoup(html, "lxml", parse_only=strainer)
+    
+    search_terms = process_ebay_search_terms(card_details)
+    prices: List[float] = []
+    
+    # Compile regex pattern once
+    price_pattern = re.compile(r'\$([\d,]+\.?\d*)')
+    
+    for li in soup.find_all("li", class_="s-item"):
+        if "s-item__sep" in li.get("class", []):
+            continue
+            
         title_div = li.find("div", class_="s-item__title")
         if not title_div:
             continue
-
+            
         title_text = title_div.get_text(strip=True).lower()
-
-        # Check required criteria:
-        if base_name not in title_text or "psa 10" not in title_text:
+        
+        # Quick rejection checks
+        if "psa 10" not in title_text:
             continue
-        if card_number and card_number not in title_text:
+            
+        if not all(term in title_text for term in search_terms.base_terms):
             continue
-        if rarity_keywords and not any(keyword in title_text for keyword in rarity_keywords):
+            
+        if search_terms.card_number and search_terms.card_number not in title_text:
             continue
-
-        # Extract and parse the price
+            
+        if search_terms.rarity_keywords and not any(
+            keyword in title_text for keyword in search_terms.rarity_keywords
+        ):
+            continue
+        
         price_span = li.find("span", class_="s-item__price")
         if not price_span:
             continue
-
-        match = re.search(r'\$([\d,]+\.?\d*)', price_span.get_text(strip=True))
-        if match:
+            
+        price_match = price_pattern.search(price_span.get_text())
+        if price_match:
             try:
-                price = float(match.group(1).replace(',', ''))
-                prices.append(price)
+                price = float(price_match.group(1).replace(',', ''))
+                if 0 < price < 100000:  # Reasonable bounds check
+                    prices.append(price)
+                    logger.debug(f"Found valid price: ${price}")
             except ValueError:
                 continue
-
+    
+    logger.info(f"Extracted {len(prices)} valid prices for {card_details.name}")
     return prices
 
-def calculate_average_price(prices: List[float]) -> Optional[float]:  # Changed return type to Optional[float]
-    """Calculates average price with optional outlier removal"""
+def calculate_average_price(prices: List[float]) -> Optional[float]:
+    """Calculate trimmed mean to remove outliers"""
     if not prices:
-        logger.warning("No prices available to calculate average.")
         return None
     
     if len(prices) < 3:
         return sum(prices) / len(prices)
-        
-    prices.sort()
-    q1_idx = max(0, len(prices) // 4)
-    q3_idx = min(len(prices) - 1, 3 * len(prices) // 4)
     
-    q1 = prices[q1_idx]
-    q3 = prices[q3_idx]
-    iqr = q3 - q1
-    lower_bound = q1 - 1.5 * iqr
-    upper_bound = q3 + 1.5 * iqr
+    mean = sum(prices) / len(prices)
+    std = (sum((x - mean) ** 2 for x in prices) / len(prices)) ** 0.5
     
-    filtered_prices = [p for p in prices if lower_bound <= p <= upper_bound]
-    if not filtered_prices:
-        return sum(prices) / len(prices)
-    return sum(filtered_prices) / len(filtered_prices)
+    filtered_prices = [p for p in prices if abs(p - mean) <= 2 * std]
+    
+    return sum(filtered_prices) / len(filtered_prices) if filtered_prices else mean
 
 async def process_card_batch(
     card_details_list: List[CardDetails],
