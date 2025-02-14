@@ -1,6 +1,6 @@
 from playwright.async_api import async_playwright
 import asyncio
-from bs4 import BeautifulSoup, SoupStrainer
+from bs4 import BeautifulSoup
 import re
 from datetime import datetime, timedelta
 import aiohttp
@@ -383,6 +383,7 @@ def extract_card_data(card_element: BeautifulSoup, card_details: CardDetails, ra
             if not all(term in title_lower for term in search_terms):
                 return None
 
+
         # Extract and validate product ID
         product_url = product_link.get('href', '')
         product_id = extract_product_id(product_url)
@@ -419,18 +420,11 @@ def extract_product_id(url: str) -> Optional[str]:
 
 @sleep_and_retry
 @limits(calls=Config.MAX_REQUESTS_EBAY, period=Config.ONE_MINUTE)
-async def get_ebay_psa10_price_async(
-    session: aiohttp.ClientSession, 
-    card_details: CardDetails
-) -> Optional[float]:
-    """Fetches PSA 10 prices from eBay with optimized searching and caching"""
-    cache_key = f"ebay_psa10_{card_details.name}_{card_details.language}"
-    cached_price = await price_cache.get(cache_key)
-    if cached_price is not None:
-        return cached_price
-
+async def get_ebay_psa10_price_async(session: aiohttp.ClientSession, card_details: CardDetails) -> Optional[float]:
+    """Fetches PSA 10 prices from eBay with improved error handling and specific card matching"""
     search_query = f"{card_details.name} PSA 10"
-    if card_details.language == "Japanese":
+
+    if card_details.language.lower() == "japanese":
         search_query += " Japanese"
 
     params = {
@@ -439,8 +433,14 @@ async def get_ebay_psa10_price_async(
         "_from": "R40",
         "rt": "nc",
         "LH_Sold": 1,
-        "LH_Complete": 1
+        "LH_Complete": 1,
+        "Language": "English" if card_details.language.lower() == "english" else "Japanese"
     }
+
+    # Manually join parameters without URL encoding.
+    query_string = urlencode(params)
+    ebay_url = f"https://www.ebay.com/sch/i.html?{query_string}"
+    logger.info(f"Accessing eBay URL: {ebay_url}")
 
     try:
         async with session.get(
@@ -452,93 +452,86 @@ async def get_ebay_psa10_price_async(
                 raise RequestError(f"eBay returned status code {response.status}")
 
             html = await response.text()
-            prices = await extract_ebay_prices(html, card_details)
+            prices = extract_ebay_prices(html, card_details)
 
             if not prices:
                 logger.warning(f"No valid prices found for {card_details.name}")
                 return None
 
-            avg_price = calculate_average_price(prices)
-            if avg_price is not None:
-                await price_cache.set(cache_key, avg_price)
-            return avg_price
+            return calculate_average_price(prices)
 
     except Exception as e:
         logger.error(f"Error fetching eBay data for {card_details.name}: {str(e)}", exc_info=True)
         return None
-    
 
-async def extract_ebay_prices(html: str, card_details: CardDetails) -> List[float]:
-    """Extracts prices from eBay HTML with optimized parsing and matching"""
-    # Parse only relevant sections
-    strainer = SoupStrainer(class_="s-item")
-    soup = BeautifulSoup(html, "lxml", parse_only=strainer)
-    
-    prices: List[float] = []
-    
-    # Define minimal matching tokens (ignore tokens like "ex" or "vmax")
-    base_tokens = [token for token in card_details.name.lower().split() if token not in ("ex", "vmax")]
-    required_token = base_tokens[0] if base_tokens else ""
-    
-    # Get card number from card name (if any)
-    card_number_match = next((re.search(r'\d+/\d+', token) for token in card_details.name.lower().split()), None)
-    card_number = card_number_match.group(0) if card_number_match else None
+def extract_ebay_prices(html: str, card_details: CardDetails) -> List[float]:
+    """Extracts prices from eBay HTML with improved matching for PSA 10 listings."""
+    soup = BeautifulSoup(html, "lxml")
+    prices = []
 
-    price_pattern = re.compile(r'\$([\d,]+\.?\d*)')
-    
-    for li in soup.find_all("li", class_="s-item"):
-        # Skip separator items
-        if "s-item__sep" in li.get("class", []):
-            continue
+    # Remove hyphen-only tokens from the card name.
+    search_parts = [part for part in card_details.name.lower().split() if part != "-"]
+    if not search_parts:
+        return prices
 
+    base_name = search_parts[0]  # e.g. "bruxish"
+    card_number = next((part for part in search_parts if re.match(r'\d+/\d+', part)), None)
+    # Optionally, use the set name or other specific keywords only if needed.
+    # Here, we continue to use rarity keywords if present.
+    rarity_keywords = {word for word in search_parts if word in {"illustration", "special", "hyper", "rare", "art", "super", "ultra"}}
+
+    for li in soup.find_all("li", class_="s-item s-item__pl-on-bottom"):
         title_div = li.find("div", class_="s-item__title")
         if not title_div:
             continue
 
         title_text = title_div.get_text(strip=True).lower()
-        
-        # Require exact "psa 10" wording
+        # Debug logging: uncomment if needed.
+        logger.debug(f"Processing title: {title_text}")
+
+        # Require that "psa 10" is in the title and base name is mentioned.
         if "psa 10" not in title_text:
             continue
-        
-        # Check required token and card number (if available)
-        if required_token and required_token not in title_text:
+        if base_name not in title_text:
             continue
         if card_number and card_number not in title_text:
             continue
+        if card_details.language.lower() != "japanese" and "japanese" in title_text:
+            continue
+        # Optionally, check for rarity keywords if you find they improve precision.
+        if rarity_keywords and not any(keyword in title_text for keyword in rarity_keywords):
+            continue
 
-        # Extract the price
         price_span = li.find("span", class_="s-item__price")
         if not price_span:
             continue
-        
-        price_match = price_pattern.search(price_span.get_text())
-        if price_match:
+
+        price_str = price_span.get_text(strip=True)
+        match = re.search(r'\$([\d,]+\.?\d*)', price_str)
+        if match:
             try:
-                price = float(price_match.group(1).replace(',', ''))
-                # Make sure the price is within reasonable bounds
-                if 0 < price < 100000:
-                    prices.append(price)
-                    logger.debug(f"Found valid price: ${price}")
+                price = float(match.group(1).replace(',', ''))
+                prices.append(price)
+                logger.debug(f"Matched price: {price} from '{price_str}'")
             except ValueError:
+                logger.warning(f"Failed to convert price: {match.group(1)}")
                 continue
-    
-    logger.info(f"Extracted {len(prices)} valid prices for {card_details.name}")
+
     return prices
 
+
 def calculate_average_price(prices: List[float]) -> Optional[float]:
-    """Calculate trimmed mean to remove outliers"""
+    """Calculate a trimmed mean to remove outliers."""
     if not prices:
         return None
-    
+
     if len(prices) < 3:
         return sum(prices) / len(prices)
-    
+
     mean = sum(prices) / len(prices)
     std = (sum((x - mean) ** 2 for x in prices) / len(prices)) ** 0.5
-    
     filtered_prices = [p for p in prices if abs(p - mean) <= 2 * std]
-    
+
     return sum(filtered_prices) / len(filtered_prices) if filtered_prices else mean
 
 async def process_card_batch(
